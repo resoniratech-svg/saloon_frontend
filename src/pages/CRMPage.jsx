@@ -4,6 +4,7 @@ import { Search, ChevronDown, Download, Upload, MoreVertical, ArrowDown, Chevron
 import { getCustomers, saveCustomers, addCustomer, updateCustomer, deleteCustomer } from '../utils/customerStorage';
 import { getOrders, updateOrder } from '../utils/orderStorage';
 import { getAppointments } from '../utils/appointmentStorage';
+import { isReadOnlySession, notifyReadOnlyBlocked } from '../utils/saasStorage';
 import InvoiceBillModal from '../components/common/InvoiceBillModal';
 
 // ==========================================
@@ -1756,16 +1757,28 @@ const CRMPage = () => {
   };
 
   const handleAddGuest = (newGuest) => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Adding new customer records');
+      return;
+    }
     const updated = addCustomer(newGuest);
     setCustomerList(updated);
   };
 
   const handleUpdateCustomer = (updatedGuest) => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Updating customer records');
+      return;
+    }
     const updated = updateCustomer(updatedGuest);
     setCustomerList(updated);
   };
 
   const handleDeleteCustomer = (customerId, customerName) => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Deleting customer records');
+      return;
+    }
     if (window.confirm(`Are you sure you want to delete customer "${customerName || 'this guest'}"?`)) {
       const updated = deleteCustomer(customerId);
       setCustomerList(updated);

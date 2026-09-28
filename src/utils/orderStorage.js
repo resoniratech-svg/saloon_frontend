@@ -51,6 +51,25 @@ export const initialOrdersGlamour = [
     paymentMethod: 'GPay',
     payments: [{ method: 'GPay', amount: 1330 }],
     status: 'New',
+  },
+  {
+    id: '4',
+    invoiceId: '4',
+    invoiceNo: '4',
+    date: '2026-09-18',
+    dateDisplay: '18-Sep-2026',
+    time: '03:45 PM',
+    guest: { name: 'Rahul Mehra', mobile: '+91 9811122334', email: 'rahul@gmail.com' },
+    items: [
+      { id: 's4', name: 'Beard Trim & Styling', price: 450, qty: 1, staff: 'Sohum K', discPercent: 0, discAmount: 0 }
+    ],
+    subTotal: 450,
+    discount: 0,
+    grandTotal: 450,
+    paymentMethod: 'Cash',
+    payments: [{ method: 'Cash', amount: 450 }],
+    status: 'Cancelled',
+    cancelReason: 'Customer requested reschedule',
   }
 ];
 

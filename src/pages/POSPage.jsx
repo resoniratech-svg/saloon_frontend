@@ -10,7 +10,7 @@ import { getMasterStaff } from '../utils/staffStorage';
 import { getCustomers, addCustomer, updateCustomer } from '../utils/customerStorage';
 import { getPackages } from '../utils/packageStorage';
 import { getMemberships } from '../utils/membershipStorage';
-import { getActiveTenant } from '../utils/saasStorage';
+import { getActiveTenant, isReadOnlySession, notifyReadOnlyBlocked } from '../utils/saasStorage';
 import { getDisposables, recordConsumption, getDisposablePriceForUnit } from '../utils/disposablesStorage';
 import { getPackageBreakdown } from '../components/common/InvoiceBillModal';
 
@@ -1259,6 +1259,10 @@ const POSPage = () => {
 
   // "Book Order" Button: Saves booking, syncs with Appointments, and immediately displays invoice bill
   const handleCreate = () => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Booking or creating an order');
+      return;
+    }
     if (!validateOrder()) return;
 
     const newInvoiceId = getNextInvoiceId();
@@ -1593,6 +1597,10 @@ const POSPage = () => {
 
   // "Create & Complete" Button (Screenshot 1)
   const handleCreateAndComplete = () => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Completing a POS order');
+      return;
+    }
     if (!validateOrder()) return;
     const newInvoiceId = getNextInvoiceId();
     const isPayAtSalon = selectedPaymentMethod === 'Pay at Salon';
@@ -3062,6 +3070,10 @@ const POSPage = () => {
         isOpen={showAddGuestModal}
         onClose={() => setShowAddGuestModal(false)}
         onGuestAdded={(newGuest) => {
+          if (isReadOnlySession()) {
+            notifyReadOnlyBlocked('Adding new guests');
+            return;
+          }
           addCustomer(newGuest);
           setSelectedGuest(newGuest);
           setGuestList(getCustomers());

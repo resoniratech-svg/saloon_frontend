@@ -14,7 +14,7 @@ import { getMasterServices } from '../utils/serviceStorage.js';
 import { getMasterProducts } from '../utils/productStorage.js';
 import { getOrders, updateOrder, updateOrderStatus } from '../utils/orderStorage.js';
 import { getAppointments, saveAppointment, updateAppointment, deleteAppointment } from '../utils/appointmentStorage.js';
-import { getActiveTenant } from '../utils/saasStorage.js';
+import { getActiveTenant, isReadOnlySession, notifyReadOnlyBlocked } from '../utils/saasStorage.js';
 
 // ==========================================
 // APPOINTMENT INVOICE BILL MODAL
@@ -905,6 +905,10 @@ export default function AppointmentPage() {
   };
 
   const handleCreateAppointment = () => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Creating an appointment');
+      return;
+    }
     const origPrice = Number(appointmentForm.originalPrice || appointmentForm.price || 200);
     const discAmt = parseFloat(appointmentForm.discAmount) || 0;
     const finalServicePrice = Math.max(0, origPrice - discAmt);
@@ -977,6 +981,10 @@ export default function AppointmentPage() {
   };
 
   const handleUpdateStatus = (id, newStatus) => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Updating appointment status');
+      return;
+    }
     updateAppointment(id, { status: newStatus });
     setAppointments(getAppointments());
     const targetAppt = appointments.find(a => a.id === id);
@@ -987,6 +995,10 @@ export default function AppointmentPage() {
   };
 
   const handleDeleteAppointment = (id) => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Deleting an appointment');
+      return;
+    }
     if (window.confirm('Are you sure you want to remove this appointment?')) {
       deleteAppointment(id);
     }
@@ -1057,6 +1069,10 @@ export default function AppointmentPage() {
   };
 
   const handleSaveReschedule = () => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Rescheduling an appointment');
+      return;
+    }
     if (!rescheduleTarget) return;
     updateAppointment(rescheduleTarget.id, {
       date: rescheduleForm.date,
@@ -1074,6 +1090,10 @@ export default function AppointmentPage() {
   };
 
   const handleSaveChangeStaff = () => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Reassigning appointment staff');
+      return;
+    }
     if (!changeStaffTarget || !selectedStaffToAssign) return;
     updateAppointment(changeStaffTarget.id, {
       staff: selectedStaffToAssign
@@ -1090,6 +1110,10 @@ export default function AppointmentPage() {
   };
 
   const handleConfirmPayment = () => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Collecting appointment payment');
+      return;
+    }
     if (!collectPaymentTarget) return;
     const finalStatus = markCompletedAfterPayment ? 'Completed' : collectPaymentTarget.status;
     updateAppointment(collectPaymentTarget.id, {

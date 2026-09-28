@@ -292,9 +292,10 @@ export const getDisposables = () => {
 
     if (isCustomTenant && list.length > 0) {
       const mockIds = new Set(initialDisposables.map(d => String(d.id)));
+      // Only filter out the built-in mock items (disp_1 through disp_15), never custom user items
       const customOnly = list.filter(d => {
-        const did = String(d.id);
-        const isMock = mockIds.has(did) || /^disp_?\d+$/i.test(did);
+        const did = String(d.id || '');
+        const isMock = mockIds.has(did) || /^disp_[1-9]\d?$/i.test(did);
         return !isMock;
       });
       if (customOnly.length !== list.length) {
@@ -345,7 +346,7 @@ export const addDisposableItem = (item) => {
   const list = getDisposables();
   const newItem = {
     ...item,
-    id: item.id || `disp_${Date.now()}`,
+    id: item.id || `disp_custom_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     stock: Number(item.stock) || 0,
     minStock: Number(item.minStock) || 5,
     unitCost: Number(item.unitCost) || 0,

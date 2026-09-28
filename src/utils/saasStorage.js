@@ -496,6 +496,91 @@ export const getCurrentUser = () => {
   }
 };
 
+// ==========================================
+// SUPER ADMIN IMPERSONATION (READ-ONLY)
+// ==========================================
+export const IMPERSONATION_KEY = 'respark_superadmin_impersonation';
+
+export const isImpersonating = () => {
+  try {
+    const raw = localStorage.getItem(IMPERSONATION_KEY);
+    return !!raw;
+  } catch (e) {
+    return false;
+  }
+};
+
+export const getImpersonationSession = () => {
+  try {
+    const raw = localStorage.getItem(IMPERSONATION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+};
+
+export const isReadOnlySession = () => {
+  return isImpersonating();
+};
+
+export const notifyReadOnlyBlocked = (actionName = 'This action') => {
+  alert(`⚠️ Read-Only Mode Active:\n\nYou are inspecting this salon in Impersonation Mode as Platform Super Admin.\n${actionName} is blocked to ensure company records cannot be modified.`);
+};
+
+export const startImpersonation = (tenant) => {
+  try {
+    const sessionData = {
+      startedAt: new Date().toISOString(),
+      superAdmin: superAdminUser,
+      targetTenantId: tenant.id,
+      targetTenantName: tenant.companyName,
+      readOnly: true
+    };
+    localStorage.setItem(IMPERSONATION_KEY, JSON.stringify(sessionData));
+
+    const impersonatedUser = {
+      id: 'usr_impersonated_' + tenant.id,
+      username: `superadmin_viewing_${tenant.id}`,
+      email: tenant.email,
+      name: `${tenant.ownerName} (View-Only)`,
+      role: 'COMPANY_ADMIN',
+      companyId: tenant.id,
+      companyName: tenant.companyName,
+      branchId: tenant.branches?.[0]?.id || 'b_1',
+      branchName: tenant.branches?.[0]?.name || 'Main Branch',
+      isImpersonated: true,
+      readOnly: true,
+      originalRole: 'SUPER_ADMIN'
+    };
+
+    setActiveTenant(tenant);
+    setCurrentUser(impersonatedUser);
+
+    window.dispatchEvent(new Event('impersonationChanged'));
+    window.dispatchEvent(new Event('saasUserChanged'));
+    window.dispatchEvent(new Event('tenantChanged'));
+    return true;
+  } catch (err) {
+    console.error('Failed to start impersonation', err);
+    return false;
+  }
+};
+
+export const stopImpersonation = () => {
+  try {
+    localStorage.removeItem(IMPERSONATION_KEY);
+    setCurrentUser(superAdminUser);
+
+    window.dispatchEvent(new Event('impersonationChanged'));
+    window.dispatchEvent(new Event('saasUserChanged'));
+    window.dispatchEvent(new Event('tenantChanged'));
+    return true;
+  } catch (err) {
+    console.error('Failed to stop impersonation', err);
+    return false;
+  }
+};
+
 export const setCurrentUser = (user) => {
   try {
     localStorage.setItem(SAAS_USER_KEY, JSON.stringify(user));

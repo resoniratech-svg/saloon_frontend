@@ -19,7 +19,7 @@ import { getMasterServices, saveMasterServices } from '../utils/serviceStorage';
 import { getMasterProducts, saveMasterProducts } from '../utils/productStorage';
 import { getPackages, createPackage, deletePackage } from '../utils/packageStorage';
 import { getMemberships, createMembership, deleteMembership } from '../utils/membershipStorage';
-import { getCurrentUser, getCashierPermissions } from '../utils/saasStorage';
+import { getCurrentUser, getCashierPermissions, isReadOnlySession, notifyReadOnlyBlocked } from '../utils/saasStorage';
 
 export default function MasterBOPage() {
   const currentUser = getCurrentUser();
@@ -152,6 +152,10 @@ export default function MasterBOPage() {
   };
 
   const handleDeleteService = (serviceId) => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Deleting services');
+      return;
+    }
     if (window.confirm('Are you sure you want to delete this service?')) {
       const updated = servicesList.filter(s => s.id !== serviceId);
       setServicesList(updated);
@@ -162,6 +166,10 @@ export default function MasterBOPage() {
   };
 
   const handleSaveService = () => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Saving services');
+      return;
+    }
     if (!serviceForm.name.trim()) {
       alert('Please enter a service name.');
       return;
@@ -208,6 +216,10 @@ export default function MasterBOPage() {
   // PRODUCTS HANDLERS
   // ==========================================
   const handleSaveProduct = () => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Saving products');
+      return;
+    }
     if (!productForm.name.trim()) {
       setProductForm(prev => ({ ...prev, error: 'Validation Error: Product Name is required.' }));
       return;
@@ -250,6 +262,10 @@ export default function MasterBOPage() {
   };
 
   const handleDeleteProduct = (productId) => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Deleting products');
+      return;
+    }
     if (window.confirm('Are you sure you want to delete this product?')) {
       const updated = productsList.filter(p => p.id !== productId);
       setProductsList(updated);
@@ -264,6 +280,10 @@ export default function MasterBOPage() {
   // ==========================================
   const handleAddPackage = (e) => {
     if (e) e.preventDefault();
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Creating packages');
+      return;
+    }
     if (!packageForm.name.trim()) return alert('Package name is required');
     if (!packageForm.price || isNaN(parseFloat(packageForm.price))) return alert('Valid package price is required');
 
@@ -284,6 +304,10 @@ export default function MasterBOPage() {
   };
 
   const handleDeletePackage = (pkgId, pkgName) => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Deleting packages');
+      return;
+    }
     if (window.confirm(`Are you sure you want to delete the package "${pkgName}"?`)) {
       deletePackage(pkgId);
       setPackagesList(getPackages());
@@ -297,6 +321,10 @@ export default function MasterBOPage() {
   // ==========================================
   const handleAddMembership = (e) => {
     if (e) e.preventDefault();
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Creating memberships');
+      return;
+    }
     if (!membershipForm.name.trim()) return alert('Membership plan name is required');
     if (!membershipForm.price || isNaN(parseFloat(membershipForm.price))) return alert('Valid membership price is required');
 
@@ -328,6 +356,10 @@ export default function MasterBOPage() {
   };
 
   const handleDeleteMembership = (memId, memName) => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Deleting memberships');
+      return;
+    }
     if (window.confirm(`Are you sure you want to delete the membership plan "${memName}"?`)) {
       deleteMembership(memId);
       setMembershipsList(getMemberships());

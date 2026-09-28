@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { Menu, UserCircle, Building2, Shield, LogOut, MapPin } from 'lucide-react';
+import { Menu, UserCircle, Building2, Shield, LogOut, MapPin, Eye } from 'lucide-react';
 import {
   getActiveTenant,
   getCurrentUser,
   getCashierPermissions,
-  isPlanFeatureAllowed
+  isPlanFeatureAllowed,
+  isImpersonating,
+  stopImpersonation
 } from '../../utils/saasStorage';
 import { getCashiersForTenant } from '../../utils/cashierStorage';
 
@@ -48,12 +50,14 @@ const TopNavBar = ({ onMenuClick }) => {
     window.addEventListener('tenantChanged', handleUpdate);
     window.addEventListener('saasUserChanged', handleUpdate);
     window.addEventListener('permissionsUpdated', handleUpdate);
+    window.addEventListener('impersonationChanged', handleUpdate);
 
     return () => {
       window.removeEventListener('saasUpdated', handleUpdate);
       window.removeEventListener('tenantChanged', handleUpdate);
       window.removeEventListener('saasUserChanged', handleUpdate);
       window.removeEventListener('permissionsUpdated', handleUpdate);
+      window.removeEventListener('impersonationChanged', handleUpdate);
     };
   }, []);
 
@@ -200,20 +204,27 @@ const TopNavBar = ({ onMenuClick }) => {
                 <div className="fixed inset-0 z-40" onClick={() => setShowUserMenu(false)} />
                 <div className="absolute right-0 top-full mt-1.5 w-60 bg-white text-slate-800 rounded-xl shadow-2xl border border-slate-200 py-1.5 z-50 animate-in fade-in zoom-in-95 duration-150">
                   <div className="px-4 py-3 border-b border-slate-100">
-                    {/* Top: Role Badge (Company Admin) */}
+                    {/* Top: Role Badge */}
                     <div className="mb-2">
-                      <span className="inline-flex items-center gap-1.5 bg-indigo-50 text-indigo-700 text-xs font-bold px-2.5 py-1 rounded-md border border-indigo-200">
-                        <Building2 size={12} className="text-indigo-600" />
-                        <span>
-                          {user?.role === 'SUPER_ADMIN' 
-                            ? 'Platform Super Admin' 
-                            : user?.role === 'CASHIER'
-                            ? 'Front Desk Cashier'
-                            : user?.role === 'STAFF' 
-                            ? `Staff (${user.position || 'Stylist'})` 
-                            : 'Company Admin'}
+                      {isImpersonating() ? (
+                        <span className="inline-flex items-center gap-1.5 bg-amber-50 text-amber-800 text-xs font-bold px-2.5 py-1 rounded-md border border-amber-300">
+                          <Eye size={12} className="text-amber-600" />
+                          <span>Super Admin (View-Only)</span>
                         </span>
-                      </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 bg-indigo-50 text-indigo-700 text-xs font-bold px-2.5 py-1 rounded-md border border-indigo-200">
+                          <Building2 size={12} className="text-indigo-600" />
+                          <span>
+                            {user?.role === 'SUPER_ADMIN' 
+                              ? 'Platform Super Admin' 
+                              : user?.role === 'CASHIER'
+                              ? 'Front Desk Cashier'
+                              : user?.role === 'STAFF' 
+                              ? `Staff (${user.position || 'Stylist'})` 
+                              : 'Company Admin'}
+                          </span>
+                        </span>
+                      )}
                     </div>
 
                     {/* Down: Admin Name */}
@@ -228,6 +239,20 @@ const TopNavBar = ({ onMenuClick }) => {
                   </div>
 
                   <div className="py-1">
+                    {isImpersonating() && (
+                      <button
+                        onClick={() => {
+                          setShowUserMenu(false);
+                          stopImpersonation();
+                          navigate('/super-admin');
+                        }}
+                        className="w-full text-left px-3.5 py-2 text-xs font-bold text-amber-800 hover:bg-amber-50 flex items-center gap-2 cursor-pointer border-b border-slate-100"
+                        title="Exit read-only impersonation and return to Super Admin Console"
+                      >
+                        <LogOut size={14} className="text-amber-600" />
+                        <span>Exit Impersonation (Return to Super Admin)</span>
+                      </button>
+                    )}
                     {user?.role === 'SUPER_ADMIN' && (
                       <button
                         onClick={() => {

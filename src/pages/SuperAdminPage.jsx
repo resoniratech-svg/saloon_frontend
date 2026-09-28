@@ -29,7 +29,8 @@ import {
   setActiveTenant,
   setCurrentUser,
   superAdminUser,
-  isTenantPlanExpired
+  isTenantPlanExpired,
+  startImpersonation
 } from '../utils/saasStorage';
 import {
   getAdminResetRequests,
@@ -213,34 +214,23 @@ const SuperAdminPage = () => {
     setTimeout(() => setNotification(''), 4000);
   };
 
-  // Handle 1-Click Login as Company Admin
-  const handleLoginAsCompanyAdmin = (tenant) => {
+  // Handle Impersonate Company (Read-Only Mode)
+  const handleImpersonateCompany = (tenant) => {
     if (isTenantPlanExpired(tenant)) {
-      setNotification(`⚠️ Cannot login: Subscription for "${tenant.companyName}" has reached its expiry date (${tenant.nextBillingDate}). Extend plan to reactivate.`);
+      setNotification(`⚠️ Cannot inspect: Subscription for "${tenant.companyName}" has reached its expiry date (${tenant.nextBillingDate}). Extend plan to reactivate.`);
       handleOpenSubscriptionModal(tenant);
       return;
     }
     if (tenant.status === 'Inactive') {
-      setNotification(`⚠️ Cannot login: Salon "${tenant.companyName}" is currently Inactive (deactivated by Super Admin). Click the status badge to switch to Active.`);
+      setNotification(`⚠️ Cannot inspect: Salon "${tenant.companyName}" is currently Inactive (deactivated by Super Admin). Click the status badge to switch to Active.`);
       return;
     }
-    const companyAdmin = {
-      id: 'usr_' + tenant.id,
-      username: tenant.email,
-      email: tenant.email,
-      name: `${tenant.ownerName} (Admin)`,
-      role: 'COMPANY_ADMIN',
-      companyId: tenant.id,
-      companyName: tenant.companyName,
-      branchId: tenant.branches?.[0]?.id || 'b_1',
-      branchName: tenant.branches?.[0]?.name || 'Main Branch'
-    };
-    setActiveTenant(tenant);
-    setCurrentUser(companyAdmin);
-    setNotification(`Switched to "${tenant.companyName}" workspace! Navigating to POS...`);
+
+    startImpersonation(tenant);
+    setNotification(`Entering "${tenant.companyName}" in Read-Only Impersonation mode...`);
     setTimeout(() => {
       navigate('/pos');
-    }, 800);
+    }, 600);
   };
 
   // Handle Company Logo Upload & Conversion to Base64 Data URL
@@ -1105,14 +1095,14 @@ const SuperAdminPage = () => {
                                 <span>Plan / Extend</span>
                               </button>
 
-                              {/* 1-Click Login as Company Admin */}
+                              {/* Impersonate Company Portal (Read-Only) */}
                               <button
-                                onClick={() => handleLoginAsCompanyAdmin(tenant)}
-                                className="flex items-center gap-1.5 bg-gradient-to-r from-pink-600 to-rose-500 hover:from-pink-700 hover:to-rose-600 text-white font-bold px-3 py-1.5 rounded-lg text-xs shadow-xs transition-all active:scale-95 cursor-pointer"
-                                title={`Login to ${tenant.companyName}`}
+                                onClick={() => handleImpersonateCompany(tenant)}
+                                className="flex items-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 hover:text-indigo-900 border border-indigo-200 font-bold px-3 py-1.5 rounded-lg text-xs shadow-2xs transition-all active:scale-95 cursor-pointer"
+                                title={`Inspect ${tenant.companyName} portal in Read-Only mode`}
                               >
-                                <span>Login as Admin</span>
-                                <ArrowRight size={13} />
+                                <Eye size={13} className="text-indigo-600" />
+                                <span>Impersonate</span>
                               </button>
 
                               {/* Delete Tenant */}
@@ -3019,12 +3009,13 @@ const SuperAdminPage = () => {
                   onClick={() => {
                     const t = viewDetailsModalTenant;
                     setViewDetailsModalTenant(null);
-                    handleLoginAsCompanyAdmin(t);
+                    handleImpersonateCompany(t);
                   }}
-                  className="flex items-center gap-1.5 bg-gradient-to-r from-pink-600 to-rose-500 hover:from-pink-700 hover:to-rose-600 text-white font-bold px-4 py-2 rounded-xl text-xs shadow-md shadow-pink-500/20 transition-all cursor-pointer"
+                  className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-4 py-2 rounded-xl text-xs shadow-md shadow-indigo-500/20 transition-all cursor-pointer"
+                  title={`Inspect ${viewDetailsModalTenant?.companyName} in Read-Only mode`}
                 >
-                  <span>Login as Admin</span>
-                  <ArrowRight size={14} />
+                  <Eye size={14} />
+                  <span>Impersonate (Read-Only)</span>
                 </button>
               </div>
             </div>

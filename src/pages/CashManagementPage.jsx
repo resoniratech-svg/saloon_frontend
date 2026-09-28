@@ -8,7 +8,7 @@ import { getCurrentShift, openCounter, closeCounter, getShiftHistory } from '../
 import { getOrders } from '../utils/orderStorage';
 import { getExpenses } from '../utils/expenseStorage';
 import { getAppointments } from '../utils/appointmentStorage';
-import { getCurrentUser } from '../utils/saasStorage';
+import { getCurrentUser, isReadOnlySession, notifyReadOnlyBlocked } from '../utils/saasStorage';
 import InvoiceBillModal from '../components/common/InvoiceBillModal';
 
 export default function CashManagementPage() {
@@ -18,7 +18,8 @@ export default function CashManagementPage() {
   const [allExpenses, setAllExpenses] = useState(() => getExpenses());
   const [allAppointments, setAllAppointments] = useState(() => getAppointments());
   const [activeTab, setActiveTab] = useState('Revenue'); // 'Revenue' | 'Expenses' | 'History'
-  const [dateFilter, setDateFilter] = useState('All'); // 'Today' | 'Month' | 'All'
+  const [dateFilter, setDateFilter] = useState('Today'); // 'Today' | 'Month' | 'All' | 'Custom'
+  const [customDate, setCustomDate] = useState('');
   const [selectedOrderForInvoice, setSelectedOrderForInvoice] = useState(null);
 
   // Modals
@@ -87,44 +88,145 @@ export default function CashManagementPage() {
     return { method, status, payments };
   };
 
-  // Filter orders and expenses according to selected date filter
-  const todayStr = useMemo(() => {
-    return new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-');
-  }, []);
+  // Robust date matchers for Today and Month filters (supports ISO, 3-letter, 4-letter UK months)
+  const isMatchToday = (dateStr) => {
+    if (!dateStr) return false;
+    const s = String(dateStr).trim().toLowerCase();
+    if (s.includes('today')) return true;
 
-  const currentMonthYear = useMemo(() => {
-    const d = new Date();
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    return `${months[d.getMonth()]}-${d.getFullYear()}`;
-  }, []);
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+
+    // ISO format: e.g. "2026-09-28"
+    const isoToday = `${yyyy}-${mm}-${dd}`;
+    if (s.includes(isoToday)) return true;
+
+    // Standard 3-letter month: e.g. "28-sep-2026"
+    const months3 = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+    const m3 = months3[now.getMonth()];
+    if (s.includes(`${dd}-${m3}-${yyyy}`)) return true;
+
+    // UK 4-letter month variant: e.g. "28-sept-2026"
+    if (s.includes(`${dd}-sept-${yyyy}`)) return true;
+
+    // Also match day and month regardless of separator
+    if (s.includes(`${dd}-${m3}`) || s.includes(`${dd} ${m3}`) || s.includes(`${dd}-sept`) || s.includes(`${dd} sept`)) {
+      if (s.includes(String(yyyy))) return true;
+    }
+
+    const parsed = new Date(dateStr);
+    if (!isNaN(parsed.getTime())) {
+      return (
+        parsed.getFullYear() === yyyy &&
+        parsed.getMonth() === now.getMonth() &&
+        parsed.getDate() === now.getDate()
+      );
+    }
+    return false;
+  };
+
+  const isMatchMonth = (dateStr) => {
+    if (!dateStr) return false;
+    const s = String(dateStr).trim().toLowerCase();
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const months3 = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+    const m3 = months3[now.getMonth()];
+
+    if (s.includes(`${yyyy}-${mm}`)) return true;
+    if (s.includes(`${m3}-${yyyy}`) || s.includes(`${m3} ${yyyy}`)) return true;
+    if (s.includes(`sept-${yyyy}`) || s.includes(`sept ${yyyy}`)) return true;
+
+    const parsed = new Date(dateStr);
+    if (!isNaN(parsed.getTime())) {
+      return parsed.getFullYear() === yyyy && parsed.getMonth() === now.getMonth();
+    }
+    return false;
+  };
+
+  const isMatchCustomDate = (dateStr, pickedIso) => {
+    if (!dateStr || !pickedIso) return false;
+    const s = String(dateStr).trim().toLowerCase();
+    const parts = pickedIso.split('-');
+    if (parts.length !== 3) return false;
+    const yyyy = parts[0];
+    const mm = parts[1];
+    const dd = parts[2];
+
+    // ISO exact match
+    if (s.includes(pickedIso)) return true;
+
+    const months3 = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+    const mIdx = parseInt(mm, 10) - 1;
+    const m3 = months3[mIdx];
+    if (m3) {
+      if (s.includes(`${dd}-${m3}-${yyyy}`)) return true;
+      if (s.includes(`${dd} ${m3} ${yyyy}`)) return true;
+      if (m3 === 'sep' && (s.includes(`${dd}-sept-${yyyy}`) || s.includes(`${dd} sept ${yyyy}`))) return true;
+    }
+
+    const parsed = new Date(dateStr);
+    if (!isNaN(parsed.getTime())) {
+      return (
+        parsed.getFullYear() === parseInt(yyyy, 10) &&
+        parsed.getMonth() === mIdx &&
+        parsed.getDate() === parseInt(dd, 10)
+      );
+    }
+    return false;
+  };
+
+  const formatDisplayDate = (isoStr) => {
+    if (!isoStr) return '';
+    try {
+      const parts = isoStr.split('-');
+      if (parts.length === 3) {
+        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const mIdx = parseInt(parts[1], 10) - 1;
+        return `${parts[2]}-${months[mIdx] || parts[1]}-${parts[0]}`;
+      }
+      return isoStr;
+    } catch (e) {
+      return isoStr;
+    }
+  };
 
   const filteredOrders = useMemo(() => {
     return (allOrders || []).filter(order => {
       if (!order) return false;
       const orderDate = order.dateDisplay || order.date || '';
       if (dateFilter === 'Today') {
-        return orderDate.includes(todayStr) || orderDate.toLowerCase().includes('today');
+        return isMatchToday(orderDate);
       }
       if (dateFilter === 'Month') {
-        return orderDate.includes(currentMonthYear);
+        return isMatchMonth(orderDate);
+      }
+      if (dateFilter === 'Custom' && customDate) {
+        return isMatchCustomDate(orderDate, customDate);
       }
       return true;
     }).sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
-  }, [allOrders, dateFilter, todayStr, currentMonthYear]);
+  }, [allOrders, dateFilter, customDate]);
 
   const filteredExpenses = useMemo(() => {
     return (allExpenses || []).filter(exp => {
       if (!exp) return false;
       const expDate = exp.date || '';
       if (dateFilter === 'Today') {
-        return expDate.includes(todayStr);
+        return isMatchToday(expDate);
       }
       if (dateFilter === 'Month') {
-        return expDate.includes(currentMonthYear);
+        return isMatchMonth(expDate);
+      }
+      if (dateFilter === 'Custom' && customDate) {
+        return isMatchCustomDate(expDate, customDate);
       }
       return true;
     }).sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
-  }, [allExpenses, dateFilter, todayStr, currentMonthYear]);
+  }, [allExpenses, dateFilter, customDate]);
 
   // Financial calculations
   const openingFloat = Number(currentShift?.openingBalance || 0);
@@ -183,6 +285,10 @@ export default function CashManagementPage() {
 
   // Handlers for Shift Control
   const handleOpenCounterConfirm = () => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Opening counter / modifying cash drawer');
+      return;
+    }
     const val = parseFloat(openBalanceInput);
     if (isNaN(val) || val < 0) {
       alert('Please enter a valid opening float amount.');
@@ -194,6 +300,10 @@ export default function CashManagementPage() {
   };
 
   const handleOpenCloseModal = () => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Closing counter / modifying cash drawer');
+      return;
+    }
     setCloseForm({
       actualCash: String(expectedDrawerCash),
       inStoreCash: String(openingFloat),
@@ -203,6 +313,10 @@ export default function CashManagementPage() {
   };
 
   const handleCloseCounterConfirm = () => {
+    if (isReadOnlySession()) {
+      notifyReadOnlyBlocked('Closing counter / modifying cash drawer');
+      return;
+    }
     const counted = parseFloat(closeForm.actualCash);
     if (isNaN(counted) || counted < 0) {
       alert('Please enter a valid physical counted cash amount.');
@@ -247,16 +361,21 @@ export default function CashManagementPage() {
               {currentShift?.status === 'ACTIVE' ? 'Counter Active (Open)' : 'Counter Closed'}
             </span>
           </div>
-          <p className="text-xs text-slate-500 mt-1">
-            Session: <strong className="text-slate-700 font-mono">{currentShift?.shiftId || 'SHIFT-101'}</strong> • 
-            Opened: <span className="text-slate-700 font-medium">{currentShift?.openedAt || 'Today'}</span> by <strong className="text-indigo-600">{currentShift?.openedBy || 'Cashier'}</strong>
+          <p className="text-xs text-slate-500 mt-1 flex flex-wrap items-center gap-1.5">
+            <span>Session: <strong className="text-slate-700 font-mono">{currentShift?.shiftId || 'SHIFT-101'}</strong> • 
+            Opened: <span className="text-slate-700 font-medium">{currentShift?.openedAt || 'Today'}</span> by <strong className="text-indigo-600">{currentShift?.openedBy || 'Cashier'}</strong></span>
+            {dateFilter === 'Custom' && customDate && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                <Calendar size={11} /> Filter: {formatDisplayDate(customDate)}
+              </span>
+            )}
           </p>
         </div>
 
         {/* Date Filter & Counter Action Buttons */}
         <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
-          {/* Quick Date Filters */}
-          <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-semibold">
+          {/* Quick Date Filters & Single Date Selector */}
+          <div className="flex flex-wrap items-center bg-slate-100 p-1 rounded-xl text-xs font-semibold gap-1">
             {['Today', 'Month', 'All'].map(filter => (
               <button
                 key={filter}
@@ -271,6 +390,42 @@ export default function CashManagementPage() {
                 {filter === 'Month' ? 'This Month' : filter}
               </button>
             ))}
+
+            {/* Single Date Picker Filter */}
+            <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all border-l border-slate-300 ml-0.5 ${
+              dateFilter === 'Custom'
+                ? 'bg-white text-indigo-700 shadow-xs font-bold'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}>
+              <Calendar size={13} className={dateFilter === 'Custom' ? 'text-indigo-600' : 'text-slate-500'} />
+              <input
+                id="single-date-picker"
+                type="date"
+                value={customDate}
+                onChange={(e) => {
+                  const picked = e.target.value;
+                  setCustomDate(picked);
+                  if (picked) {
+                    setDateFilter('Custom');
+                  }
+                }}
+                className="bg-transparent border-none text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer p-0"
+                title="Select a specific single date"
+              />
+              {dateFilter === 'Custom' && customDate && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomDate('');
+                    setDateFilter('Today');
+                  }}
+                  className="p-0.5 text-slate-400 hover:text-rose-600 rounded cursor-pointer transition-colors"
+                  title="Clear single date filter (reset to Today)"
+                >
+                  <X size={13} />
+                </button>
+              )}
+            </div>
           </div>
 
           {currentShift?.status === 'ACTIVE' ? (
@@ -330,18 +485,22 @@ export default function CashManagementPage() {
           </div>
         </div>
 
-        {/* Card 3: Counter Cash Expenses */}
+        {/* Card 3: Total Salon Expenses */}
         <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs">
           <div className="flex items-center justify-between text-slate-500 mb-2">
-            <span className="text-xs font-bold uppercase tracking-wider">Cash Expenses</span>
+            <span className="text-xs font-bold uppercase tracking-wider">Total Expenses</span>
             <div className="w-8 h-8 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center">
               <ArrowUpRight size={18} />
             </div>
           </div>
           <div className="text-2xl font-black text-rose-600 font-mono">
-            -₹{cashExpensesTotal.toLocaleString()}
+            -₹{totalExpenses.toLocaleString()}
           </div>
-          <p className="text-[11px] text-slate-400 mt-1">Petty cash disbursed from counter</p>
+          <div className="flex items-center gap-2 text-[11px] text-slate-500 mt-1">
+            <span className="font-semibold text-rose-600 font-mono">-₹{cashExpensesTotal.toLocaleString()} Cash</span>
+            <span>•</span>
+            <span className="font-mono text-slate-600">-₹{digitalExpensesTotal.toLocaleString()} Card/Bank</span>
+          </div>
         </div>
 
         {/* Card 4: Estimated Live Cash in Drawer */}
@@ -356,7 +515,7 @@ export default function CashManagementPage() {
             ₹{expectedDrawerCash.toLocaleString()}
           </div>
           <div className="text-[11px] text-indigo-200 mt-1">
-            Float (₹{openingFloat}) + Cash (₹{cashSalesTotal}) - Out (₹{cashExpensesTotal})
+            Float (₹{openingFloat}) + Cash In (₹{cashSalesTotal}) - Cash Out (₹{cashExpensesTotal})
           </div>
         </div>
       </div>
@@ -367,7 +526,7 @@ export default function CashManagementPage() {
         <div className="flex border-b border-slate-200 px-6 pt-4 gap-6 bg-slate-50/50">
           {[
             { id: 'Revenue', label: 'Revenue Orders', count: filteredOrders.length },
-            { id: 'Expenses', label: 'Petty Cash Expenses', count: filteredExpenses.length },
+            { id: 'Expenses', label: 'Expenses & Petty Cash', count: filteredExpenses.length },
             { id: 'History', label: 'Shift Handover Logs', count: shiftHistory.length }
           ].map(tab => (
             <button
