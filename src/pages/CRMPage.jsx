@@ -867,7 +867,7 @@ const CustomerOrderHistoryModal = ({ isOpen, onClose, customer, allOrders, allAp
         </div>
 
         {/* Quick Highlights Bar */}
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 px-6 py-3.5 bg-slate-50/50 border-b border-slate-100 text-xs">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 px-6 py-3.5 bg-slate-50/50 border-b border-slate-100 text-xs">
           <div className="bg-white p-2.5 rounded-xl border border-slate-100 shadow-2xs">
             <span className="text-slate-400 block text-[10px] uppercase font-bold">Total Orders</span>
             <span className="text-base font-black text-slate-800">{history.orders.length}</span>
@@ -890,10 +890,6 @@ const CustomerOrderHistoryModal = ({ isOpen, onClose, customer, allOrders, allAp
                 <span className="text-xs text-slate-400 font-normal ml-1">/ {history.packages.length}</span>
               )}
             </span>
-          </div>
-          <div className="bg-white p-2.5 rounded-xl border border-slate-100 shadow-2xs">
-            <span className="text-slate-400 block text-[10px] uppercase font-bold">Memberships</span>
-            <span className="text-base font-black text-emerald-600">{history.memberships.length}</span>
           </div>
         </div>
 
@@ -932,24 +928,6 @@ const CustomerOrderHistoryModal = ({ isOpen, onClose, customer, allOrders, allAp
               activeTab === 'packages' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'
             }`}>
               {history.packages.length}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('memberships')}
-            className={`py-2.5 px-3.5 text-xs font-bold border-b-2 flex items-center gap-2 transition-colors cursor-pointer ${
-              activeTab === 'memberships'
-                ? 'border-emerald-600 text-emerald-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <CreditCard size={14} />
-            <span>Memberships</span>
-            <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
-              activeTab === 'memberships' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'
-            }`}>
-              {history.memberships.length}
             </span>
           </button>
         </div>
@@ -1146,65 +1124,6 @@ const CustomerOrderHistoryModal = ({ isOpen, onClose, customer, allOrders, allAp
                           {pkg.totalSessions !== undefined && pkg.totalSessions !== null
                             ? `${pkg.remainingSessions ?? 0} of ${pkg.totalSessions} left`
                             : 'Unlimited'}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )
-          )}
-
-          {/* TAB 3: MEMBERSHIPS */}
-          {activeTab === 'memberships' && (
-            history.memberships.length === 0 ? (
-              <div className="text-center py-12 text-slate-400">
-                <CreditCard size={36} className="mx-auto mb-2 text-slate-300" />
-                <p className="font-semibold text-slate-600 text-sm">No active memberships</p>
-                <p className="text-xs text-slate-400 mt-1">Memberships purchased or assigned will appear here</p>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {history.memberships.map((mem, mIdx) => (
-                  <div key={mem.id || mIdx} className="bg-white rounded-xl border border-emerald-100 p-4 shadow-2xs hover:border-emerald-200 transition-colors">
-                    <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100">
-                      <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center">
-                          <CreditCard size={16} />
-                        </div>
-                        <div>
-                          <h4 className="font-bold text-slate-800 text-sm">{mem.name}</h4>
-                          <span className="text-[11px] text-emerald-600 font-medium">{mem.tier || 'VIP Tier'}</span>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
-                          ₹{Number(mem.amount || 0).toLocaleString()}
-                        </span>
-                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                          {mem.status || 'Active'}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-3 text-xs">
-                      <div>
-                        <span className="text-slate-400 text-[10px] uppercase font-bold block">Enrolled Date</span>
-                        <span className="font-semibold text-slate-700 flex items-center gap-1 mt-0.5">
-                          <Calendar size={12} className="text-slate-400" /> {mem.purchaseDate || '-'}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-slate-400 text-[10px] uppercase font-bold block">Validity</span>
-                        <span className="font-semibold text-slate-700 flex items-center gap-1 mt-0.5">
-                          <Clock size={12} className="text-emerald-500" /> {mem.validityDays} Days
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-slate-400 text-[10px] uppercase font-bold block">Valid Until</span>
-                        <span className="font-semibold text-emerald-600 flex items-center gap-1 mt-0.5">
-                          <CheckCircle2 size={12} className="text-emerald-500" /> {mem.expiryDate || '-'}
                         </span>
                       </div>
                     </div>

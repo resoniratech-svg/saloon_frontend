@@ -757,7 +757,6 @@ const SuperAdminPage = () => {
     'CRM & Client Management',
     'Master BackOffice Catalog',
     'Salon Inventory & POs',
-    'Salon Disposables & Wastage',
     'Expenses Management',
     'Staff Payroll & Commissions',
     'Reports & Business Analytics',

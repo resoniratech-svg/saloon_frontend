@@ -899,7 +899,10 @@ export const isPlanFeatureAllowed = (tenant, moduleKey) => {
       return features.some(f => 
         f.includes('disposable') || 
         f.includes('consumable') || 
-        f.includes('wastage')
+        f.includes('wastage') || 
+        f.includes('backoffice') || 
+        f.includes('catalog') || 
+        f.includes('master bo')
       );
     case 'trends':
       return features.some(f => 

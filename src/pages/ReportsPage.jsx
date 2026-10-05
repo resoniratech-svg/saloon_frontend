@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { FileText, Download, Calendar, Filter, ChevronDown, Search, ArrowUpDown, ChevronRight, Inbox } from 'lucide-react';
+import { FileText, Calendar, Filter, ChevronDown, Search, ArrowUpDown, ChevronRight, Inbox } from 'lucide-react';
 import { getOrders } from '../utils/orderStorage';
 import { getAppointments } from '../utils/appointmentStorage';
 import { getExpenses } from '../utils/expenseStorage';
@@ -283,13 +283,16 @@ export default function ReportsPage() {
 
             const type = (item.itemType || '').toLowerCase();
             const cat = (item.category || '').toUpperCase();
-            const isProd = type === 'product' || cat === 'PRODUCT';
+            const isProd = type === 'product' || cat === 'PRODUCT' || cat === 'RETAIL';
             const isPkg = type === 'package' || cat === 'PACKAGE';
+            const isDisp = type === 'disposable' || cat === 'DISPOSABLE' || cat.includes('DISPOSABLE') || (item.header && item.header.toLowerCase().includes('disposable'));
+            const isRedeem = type === 'package_redemption' || cat === 'PACKAGE_REDEMPTION' || (item.name && item.name.toLowerCase().startsWith('redemption:'));
+
             if (isProd) {
               byDate[d].productRev += lineTotal;
             } else if (isPkg) {
               byDate[d].packageRev += lineTotal;
-            } else {
+            } else if (!isDisp && !isRedeem) {
               byDate[d].servicesRev += lineTotal;
             }
             byDate[d].discount += disc;
@@ -358,7 +361,10 @@ export default function ReportsPage() {
             const isProd = type === 'product' || cat === 'PRODUCT' || cat === 'RETAIL';
             const isPkg = type === 'package' || cat === 'PACKAGE';
             const isMem = type === 'membership' || cat === 'MEMBERSHIP';
-            if (!isProd && !isPkg && !isMem) {
+            const isDisp = type === 'disposable' || cat === 'DISPOSABLE' || cat.includes('DISPOSABLE') || (item.header && item.header.toLowerCase().includes('disposable'));
+            const isRedeem = type === 'package_redemption' || cat === 'PACKAGE_REDEMPTION' || (item.name && item.name.toLowerCase().startsWith('redemption:'));
+
+            if (!isProd && !isPkg && !isMem && !isDisp && !isRedeem) {
               const name = item.name || 'Salon Service';
               if (!srvMap[name]) {
                 srvMap[name] = {
@@ -593,9 +599,13 @@ export default function ReportsPage() {
             const disc = Number(item.discAmount) || 0;
             const line = Math.max(0, (price * qty) - disc);
             const isProd = item.itemType === 'product' || (!item.itemType && item.category === 'PRODUCT');
+            const isPkg = item.itemType === 'package' || item.category === 'PACKAGE';
+            const isDisp = item.itemType === 'disposable' || item.category === 'DISPOSABLE';
+            const isRedeem = item.itemType === 'package_redemption' || item.category === 'PACKAGE_REDEMPTION' || (item.name && item.name.toLowerCase().startsWith('redemption:'));
+
             if (isProd) {
               monthMap[monthKey].productRev += line;
-            } else {
+            } else if (!isPkg && !isDisp && !isRedeem) {
               monthMap[monthKey].serviceRev += line;
             }
           });
@@ -903,22 +913,6 @@ export default function ReportsPage() {
     }, 300);
   };
 
-  const handleExportCSV = () => {
-    if (rows.length === 0) {
-      alert('No data available to export for this report.');
-      return;
-    }
-    const header = columns.join(',');
-    const body = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
-    const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + encodeURIComponent(`${header}\n${body}`);
-    const link = document.createElement('a');
-    link.setAttribute('href', csvContent);
-    link.setAttribute('download', `${selectedReport.replace(/\s+/g, '_')}_${toDisplayDate(appliedFromDate)}_to_${toDisplayDate(appliedToDate)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
   return (
     <div className="flex flex-col md:flex-row min-h-screen bg-slate-50">
       {/* Left Sidebar: Report Directory */}
@@ -968,12 +962,6 @@ export default function ReportsPage() {
               <h1 className="text-lg font-bold text-slate-800">{selectedReport}</h1>
               <span className="text-xs text-slate-500">Real-time operational reporting & GST compliance</span>
             </div>
-            <button 
-              onClick={handleExportCSV}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
-            >
-              <Download size={15} /> Export as XLSX
-            </button>
           </div>
 
           {/* Filter Controls Row */}

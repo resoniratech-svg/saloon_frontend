@@ -110,6 +110,8 @@ export default function TrendsPage() {
         const isProd = item.itemType === 'product' || (!item.itemType && item.category === 'PRODUCT');
         const isPkg = item.itemType === 'package' || item.category === 'PACKAGE';
         const isMem = item.itemType === 'membership' || item.category === 'MEMBERSHIP';
+        const isDisp = item.itemType === 'disposable' || item.category === 'DISPOSABLE';
+        const isRedeem = item.itemType === 'package_redemption' || item.category === 'PACKAGE_REDEMPTION' || (item.name && item.name.toLowerCase().startsWith('redemption:'));
         const price = Number(item.price) || 0;
         const qty = Number(item.qty) || 1;
         const disc = Number(item.discAmount) || 0;
@@ -119,7 +121,7 @@ export default function TrendsPage() {
           productRev += line;
           productUnitsCount += qty;
           orderHasProduct = true;
-        } else if (isPkg || isMem) {
+        } else if (isPkg || isMem || isDisp || isRedeem) {
           otherRev += line;
         } else {
           serviceRev += line;
@@ -206,7 +208,12 @@ export default function TrendsPage() {
     validOrders.forEach((o, idx) => {
       let amt = Number(o.grandTotal ?? o.subTotal ?? 0);
       if (activeCategory === 'Service') {
-        amt = (o.items || []).filter(i => i.itemType !== 'product').reduce((s, it) => s + (Number(it.price) * (Number(it.qty) || 1)), 0);
+        amt = (o.items || []).filter(i => {
+          const t = (i.itemType || '').toLowerCase();
+          const c = (i.category || '').toUpperCase();
+          const isNotService = t === 'product' || c === 'PRODUCT' || t === 'package' || c === 'PACKAGE' || t === 'disposable' || c === 'DISPOSABLE' || t === 'membership' || c === 'MEMBERSHIP' || t === 'package_redemption' || c === 'PACKAGE_REDEMPTION' || (i.name && i.name.toLowerCase().startsWith('redemption:'));
+          return !isNotService;
+        }).reduce((s, it) => s + (Number(it.price) * (Number(it.qty) || 1)), 0);
       } else if (activeCategory === 'Product') {
         amt = (o.items || []).filter(i => i.itemType === 'product').reduce((s, it) => s + (Number(it.price) * (Number(it.qty) || 1)), 0);
       }

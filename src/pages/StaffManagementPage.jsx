@@ -24,6 +24,7 @@ export default function StaffManagementPage() {
   const [notification, setNotification] = useState('');
   const [isLoadingStaff, setIsLoadingStaff] = useState(false);
   const [isSavingStaff, setIsSavingStaff] = useState(false);
+  const [salaryStatuses, setSalaryStatuses] = useState({});
 
   // Selected & Modal States
   const [selectedStaffId, setSelectedStaffId] = useState(null);
