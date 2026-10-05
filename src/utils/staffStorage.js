@@ -1,22 +1,120 @@
 import { getActiveTenantId } from './saasStorage';
+import { staffApi } from '../api/client';
 
-const STAFF_STORAGE_KEY = 'respark_master_staff';
+let inMemoryWorkExpMap = {};
+
+export const getStoredStaffExperience = (staffId) => {
+  if (!staffId) return [];
+  return Array.isArray(inMemoryWorkExpMap[staffId]) ? inMemoryWorkExpMap[staffId] : [];
+};
+
+export const setStoredStaffExperience = (staffId, exp) => {
+  if (!staffId) return;
+  inMemoryWorkExpMap[staffId] = Array.isArray(exp) ? exp : [];
+};
+
+export const mapBackendStaffToFrontend = (item) => {
+  const pd = item.personalDetails || {};
+  const jd = item.joiningDetails || {};
+  const bd = item.bankDetails || {};
+  const as = item.appointmentSettings || {};
+  const desigName = jd.designation?.name || item.designation || 'Stylist';
+  const resolvedName = item.name || `${pd.firstName || ''} ${pd.lastName || ''}`.trim() || 'Staff';
+  const nameParts = resolvedName.split(' ');
+
+  // Compute weekly off day string if available
+  let weeklyOffStr = 'Monday';
+  if (Array.isArray(item.weeklySchedules) && item.weeklySchedules.length > 0) {
+    const offDay = item.weeklySchedules.find(w => w.isWeeklyOff);
+    if (offDay) {
+      const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      weeklyOffStr = days[offDay.dayOfWeek] || 'Monday';
+    }
+  }
+
+  // Work experience resolution (from encoded address or local storage cache)
+  let workExp = [];
+  let realAddress = pd.address || '';
+  if (pd.address && pd.address.startsWith('EXP_DATA:')) {
+    try {
+      const parsed = JSON.parse(pd.address.replace('EXP_DATA:', ''));
+      if (Array.isArray(parsed.exp)) {
+        workExp = parsed.exp;
+      }
+      realAddress = parsed.addr || '';
+    } catch (e) {}
+  }
+
+  if (workExp.length === 0 && item.id) {
+    const localExp = getStoredStaffExperience(item.id);
+    if (Array.isArray(localExp) && localExp.length > 0) {
+      workExp = localExp;
+    }
+  }
+
+  if (item.id && workExp.length > 0) {
+    setStoredStaffExperience(item.id, workExp);
+  }
+
+  // KYC documents resolution (ensure both type/documentType and number/documentNumber are present)
+  const docs = Array.isArray(item.documents)
+    ? item.documents.map(d => ({
+        id: d.id,
+        type: d.documentType || d.type || 'Identity Proof',
+        documentType: d.documentType || d.type || 'Identity Proof',
+        number: d.documentNumber || d.number || '',
+        documentNumber: d.documentNumber || d.number || '',
+        url: d.documentUrl || d.url || '',
+        documentUrl: d.documentUrl || d.url || '',
+      }))
+    : [];
+
+  return {
+    id: item.id,
+    name: resolvedName,
+    firstName: pd.firstName || nameParts[0] || '',
+    lastName: pd.lastName || nameParts.slice(1).join(' ') || '',
+    phone: pd.mobile || item.phone || '',
+    mobile: pd.mobile || item.phone || '',
+    email: pd.email || '',
+    address: realAddress,
+    dob: pd.dob ? new Date(pd.dob).toISOString().split('T')[0] : '',
+    gender: pd.gender || 'Male',
+    position: desigName,
+    designation: desigName,
+    role: 'Stylist',
+    empNo: jd.employeeNumber || `EMP-${String(item.id).slice(-4)}`,
+    joiningDate: jd.joiningDate ? new Date(jd.joiningDate).toISOString().split('T')[0] : '',
+    workingHours: jd.workingHours || '9',
+    reportingTo: jd.reportingTo?.name || '',
+    bankName: bd.bankName || '',
+    branch: bd.branch || '',
+    accountNumber: bd.accountNumber || '',
+    ifsc: bd.ifsc || '',
+    active: item.isActive !== undefined ? item.isActive : true,
+    enableAppointments: as.enableAppointments !== undefined ? as.enableAppointments : true,
+    showAppointmentsInDashboard: as.showAllAppointments !== undefined ? as.showAllAppointments : true,
+    weeklyOff: weeklyOffStr,
+    workExperience: workExp,
+    documents: docs,
+  };
+};
 
 export const initialStaffMembers = [
   { 
     id: 1, 
-    name: 'Respark Trial', 
-    firstName: 'Respark', 
-    lastName: 'Trial',
+    name: 'Siri H', 
+    firstName: 'Siri', 
+    lastName: 'H',
     designation: 'Senior Stylist', 
     empNo: 'EMP-001', 
     phone: '+91 9823412345', 
-    email: 'respark.trial@saloon.com',
+    email: 'siri.h@saloon.com',
     dob: '1990-05-15',
     position: 'Senior Stylist',
-    gender: 'Male',
+    gender: 'Female',
     role: 'Stylist',
-    username: 'respark.trial',
+    username: 'siri.h',
     password: 'password123',
     useMobileAsUsername: false,
     active: true,
@@ -56,7 +154,7 @@ export const initialStaffMembers = [
     weeklyOff: 'Tuesday',
     joiningDate: '2023-03-01',
     uanNumber: '100902837466',
-    reportingTo: 'Respark Trial',
+    reportingTo: 'Siri H',
     workingHours: '9',
     bankName: 'ICICI Bank',
     branch: 'Kalyaninagar',
@@ -118,7 +216,7 @@ export const initialStaffMembers = [
     weeklyOff: 'Thursday',
     joiningDate: '2022-11-01',
     uanNumber: '100902837468',
-    reportingTo: 'Respark Trial',
+    reportingTo: 'Siri H',
     workingHours: '9',
     bankName: 'Axis Bank',
     branch: 'Kalyaninagar',
@@ -149,7 +247,7 @@ export const initialStaffMembers = [
     weeklyOff: 'Monday',
     joiningDate: '2024-01-15',
     uanNumber: '100902837469',
-    reportingTo: 'Respark Trial',
+    reportingTo: 'Siri H',
     workingHours: '9',
     bankName: 'HDFC Bank',
     branch: 'Viman Nagar',
@@ -280,173 +378,308 @@ export const getInitialStaffForTenant = (tenantId) => {
   return [];
 };
 
-export const getStaffForTenant = (tenantId) => {
-  try {
-    const storageKey = `respark_staff_${tenantId}`;
-    let data = localStorage.getItem(storageKey);
-
-    if (!data && tenantId === 'tenant_glamour') {
-      const legacy = localStorage.getItem('respark_master_staff');
-      if (legacy) data = legacy;
-    }
-
-    if (!data) {
-      const initial = getInitialStaffForTenant(tenantId);
-      localStorage.setItem(storageKey, JSON.stringify(initial));
-      return initial;
-    }
-
-    let parsed = JSON.parse(data);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    // Filter out any cashiers (as cashiers are now kept in dedicated cashierStorage)
-    let pureStaff = parsed.filter(s => 
-      s.role !== 'Cashier' && 
-      !s.position?.toLowerCase().includes('cashier') &&
-      !s.designation?.toLowerCase().includes('cashier') &&
-      s.username !== 'cashier'
-    );
-
-    // For custom salons: filter out demo mock staff members
-    if (tenantId !== 'tenant_glamour' && tenantId !== 'tenant_naturals' && tenantId !== 'tenant_enrich') {
-      const mockIds = new Set([
-        ...initialStaffMembers.map(s => String(s.id)),
-        ...naturalsStaffMembers.map(s => String(s.id)),
-        ...enrichStaffMembers.map(s => String(s.id)),
-      ]);
-      const mockNames = new Set([
-        'respark trial', 'sohum k', 'swati r', 'akshay d', 'madhu g',
-        'pooja h', 'anita d', 'sneha k', 'rahul v'
-      ]);
-      const customOnly = pureStaff.filter(s => {
-        const sid = String(s.id);
-        const sName = (s.name || `${s.firstName || ''} ${s.lastName || ''}`).trim().toLowerCase();
-        // User created staff have timestamp IDs
-        const isUserCreated = /^\d{10,}$/.test(sid);
-        if (isUserCreated) return true;
-        const isMock = mockIds.has(sid) || mockNames.has(sName) || Number(sid) < 1000;
-        return !isMock;
-      });
-      if (customOnly.length !== pureStaff.length) {
-        localStorage.setItem(storageKey, JSON.stringify(customOnly));
-        pureStaff = customOnly;
-      }
-    }
-
-    return pureStaff;
-  } catch (err) {
-    return getInitialStaffForTenant(tenantId);
-  }
+export const getStaffForTenant = () => {
+  return getMasterStaff();
 };
 
-export const getMasterStaff = () => {
+let inMemoryStaff = [];
+let hasFetchedStaffFromBackend = false;
+
+export const purgeLocalStaff = () => {
   try {
-    const tenantId = getActiveTenantId();
-    const storageKey = getStaffStorageKey();
-    let data = localStorage.getItem(storageKey);
-
-    // Auto-migrate previous un-scoped key for Glamour so no data is lost
-    if (!data && tenantId === 'tenant_glamour') {
-      const legacy = localStorage.getItem('respark_master_staff');
-      if (legacy) {
-        localStorage.setItem(storageKey, legacy);
-        data = legacy;
+    const keysToRemove = [
+      'respark_master_staff',
+      'respark_staff_work_experience',
+      'staff_members',
+    ];
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('respark_staff_') || k.startsWith('staff_'))) {
+        keysToRemove.push(k);
       }
     }
-
-    if (!data) {
-      const initial = getInitialStaffForTenant(tenantId);
-      localStorage.setItem(storageKey, JSON.stringify(initial));
-      return initial;
-    }
-    let parsed = JSON.parse(data);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    // Filter out any cashiers
-    let pureStaff = parsed.filter(s => 
-      s.role !== 'Cashier' && 
-      !s.position?.toLowerCase().includes('cashier') &&
-      !s.designation?.toLowerCase().includes('cashier') &&
-      s.username !== 'cashier'
-    );
-
-    // For custom salons: automatically filter out legacy mock staff items
-    if (tenantId !== 'tenant_glamour' && tenantId !== 'tenant_naturals' && tenantId !== 'tenant_enrich') {
-      const mockIds = new Set([
-        ...initialStaffMembers.map(s => String(s.id)),
-        ...naturalsStaffMembers.map(s => String(s.id)),
-        ...enrichStaffMembers.map(s => String(s.id)),
-      ]);
-      const mockNames = new Set([
-        'respark trial', 'sohum k', 'swati r', 'akshay d', 'madhu g',
-        'pooja h', 'anita d', 'sneha k', 'rahul v'
-      ]);
-      const customOnly = pureStaff.filter(s => {
-        const sid = String(s.id);
-        const sName = (s.name || `${s.firstName || ''} ${s.lastName || ''}`).trim().toLowerCase();
-        // User created staff have timestamp IDs
-        const isUserCreated = /^\d{10,}$/.test(sid);
-        if (isUserCreated) return true;
-        const isMock = mockIds.has(sid) || mockNames.has(sName) || Number(sid) < 1000;
-        return !isMock;
-      });
-      if (customOnly.length !== pureStaff.length) {
-        localStorage.setItem(storageKey, JSON.stringify(customOnly));
-        pureStaff = customOnly;
-      }
-    }
-
-    return pureStaff.map(s => {
-      const resolvedName = (s.name || `${s.firstName || ''} ${s.lastName || ''}`).trim() || 'Staff';
-      const nameParts = resolvedName.split(' ');
-      return {
-        ...s,
-        name: resolvedName,
-        firstName: s.firstName || nameParts[0] || '',
-        lastName: s.lastName || nameParts.slice(1).join(' ') || '',
-        phone: s.phone || s.mobile || '+91 9823412345',
-        email: s.email || '',
-        dob: s.dob || '',
-        position: s.position || s.designation || 'Staff',
-        gender: s.gender || 'Male',
-        role: s.role || 'Stylist',
-        username: s.username || (resolvedName ? resolvedName.toLowerCase().replace(/\s+/g, '.') : ''),
-        password: s.password || '',
-        useMobileAsUsername: s.useMobileAsUsername || false,
-        active: s.active !== undefined ? s.active : true,
-        enableAppointments: s.enableAppointments !== undefined ? s.enableAppointments : true,
-        showAppointmentsInDashboard: s.showAppointmentsInDashboard !== undefined ? s.showAppointmentsInDashboard : true,
-        weeklyOff: s.weeklyOff || 'Monday',
-        joiningDate: s.joiningDate || '',
-        designation: s.designation || s.position || 'Hair Stylist',
-        uanNumber: s.uanNumber || '',
-        reportingTo: s.reportingTo || '',
-        workingHours: s.workingHours || '9',
-        bankName: s.bankName || '',
-        branch: s.branch || '',
-        accountNumber: s.accountNumber || '',
-        ifsc: s.ifsc || '',
-        workExperience: s.workExperience || [],
-        documents: s.documents || [],
-      };
+    keysToRemove.forEach((key) => {
+      try {
+        localStorage.removeItem(key);
+      } catch (e) {}
     });
-  } catch (err) {
-    console.error('Error in getMasterStaff:', err);
-    return initialStaffMembers;
+  } catch (err) {}
+};
+
+purgeLocalStaff();
+
+export const getMasterStaff = () => {
+  if (!hasFetchedStaffFromBackend) {
+    syncStaffFromBackend();
   }
+  return [...inMemoryStaff];
 };
 
 export const saveMasterStaff = (staffList) => {
+  inMemoryStaff = Array.isArray(staffList) ? staffList : [];
+  window.dispatchEvent(new Event('staffUpdated'));
+  window.dispatchEvent(new CustomEvent('resparkStaffUpdated', { detail: inMemoryStaff }));
+};
+
+const DAY_MAP = {
+  sunday: 0,
+  monday: 1,
+  tuesday: 2,
+  wednesday: 3,
+  thursday: 4,
+  friday: 5,
+  saturday: 6,
+};
+
+const toBackendWeeklyOff = (dayName) => {
+  const norm = String(dayName || 'monday').toLowerCase();
+  const dayIndex = DAY_MAP[norm] !== undefined ? DAY_MAP[norm] : 1;
+  return [0, 1, 2, 3, 4, 5, 6].map((day) => ({
+    dayOfWeek: day,
+    isWeeklyOff: day === dayIndex,
+  }));
+};
+
+/**
+ * Creates a staff member both in local storage (instant UI) and persists to PostgreSQL backend
+ */
+export const addStaffMember = async (staffData) => {
+  const fullName = `${staffData.firstName || ''} ${staffData.lastName || ''}`.trim() || staffData.name?.trim() || 'Staff';
+  const nameParts = fullName.split(' ');
+  const tempId = staffData.id || `staff_${Date.now()}`;
+  const empNo = staffData.empNo || `EMP-${Date.now().toString().slice(-4)}`;
+  const desig = staffData.designation?.trim() || staffData.position?.trim() || 'Stylist';
+  const firstName = (staffData.firstName?.trim() || nameParts[0] || 'Staff').trim();
+  const lastName = (staffData.lastName?.trim() || nameParts.slice(1).join(' ') || '.').trim();
+  const mobile = (staffData.mobile || staffData.phone || '9999999999').trim();
+
+  const newStaff = {
+    ...staffData,
+    id: tempId,
+    name: fullName,
+    firstName,
+    lastName,
+    phone: mobile,
+    mobile,
+    empNo,
+    position: desig,
+    designation: desig,
+    role: 'Stylist',
+    active: staffData.active !== undefined ? staffData.active : true,
+    weeklyOff: staffData.weeklyOff || 'Monday',
+  };
+
+  // 1. Optimistic UI update
+  if (tempId && Array.isArray(staffData.workExperience) && staffData.workExperience.length > 0) {
+    setStoredStaffExperience(tempId, staffData.workExperience);
+  }
+  const currentList = getMasterStaff();
+  const optimistic = [newStaff, ...currentList.filter(s => String(s.id) !== String(tempId))];
+  saveMasterStaff(optimistic);
+
+  // 2. Persist to PostgreSQL backend via staffApi
   try {
-    const storageKey = getStaffStorageKey();
-    localStorage.setItem(storageKey, JSON.stringify(staffList));
-    window.dispatchEvent(new Event('staffUpdated'));
-    window.dispatchEvent(new CustomEvent('resparkStaffUpdated', { detail: staffList }));
+    const expPayload = Array.isArray(staffData.workExperience) && staffData.workExperience.length > 0
+      ? `EXP_DATA:${JSON.stringify({ exp: staffData.workExperience, addr: staffData.address || '' })}`
+      : (staffData.address || undefined);
+
+    const payload = {
+      personalDetails: {
+        firstName,
+        lastName,
+        displayName: fullName,
+        mobile,
+        email: staffData.email?.trim() || undefined,
+        gender: staffData.gender || 'Male',
+        dob: staffData.dob || undefined,
+        address: expPayload,
+      },
+      joiningDetails: {
+        joiningDate: staffData.joiningDate || new Date().toISOString().split('T')[0],
+        designationId: desig,
+        employeeNumber: empNo,
+        reportingToId: staffData.reportingTo || undefined,
+        workingHours: staffData.workingHours || '9',
+      },
+      documents: Array.isArray(staffData.documents) ? staffData.documents.map(d => ({
+        documentType: d.type || d.documentType || 'Identity Proof',
+        documentNumber: d.number || d.documentNumber || '',
+        documentUrl: d.url || d.documentUrl || 'https://placeholder.internal/doc',
+      })) : [],
+      bankDetails: {
+        bankName: staffData.bankName || 'General Bank',
+        branch: staffData.branch || 'Main',
+        accountNumber: staffData.accountNumber || '0000000000',
+        ifsc: staffData.ifsc || 'BANK0000001',
+      },
+      appointmentSettings: {
+        enableAppointments: staffData.enableAppointments !== undefined ? staffData.enableAppointments : true,
+        showAllAppointments: staffData.showAppointmentsInDashboard !== undefined ? staffData.showAppointmentsInDashboard : true,
+      },
+      weeklySchedule: toBackendWeeklyOff(staffData.weeklyOff),
+    };
+
+    const res = await staffApi.createStaff(payload);
+    if (res?.success && res?.data?.id) {
+      if (Array.isArray(staffData.workExperience) && staffData.workExperience.length > 0) {
+        setStoredStaffExperience(res.data.id, staffData.workExperience);
+      }
+      const persisted = mapBackendStaffToFrontend(res.data);
+      if ((!persisted.workExperience || persisted.workExperience.length === 0) && staffData.workExperience?.length > 0) {
+        persisted.workExperience = staffData.workExperience;
+      }
+      const liveList = getMasterStaff();
+      const replaced = liveList.map(s => String(s.id) === String(tempId) ? persisted : s);
+      saveMasterStaff(replaced);
+      return replaced;
+    }
   } catch (err) {
-    console.error('Error in saveMasterStaff:', err);
+    console.error('Backend staff creation failed:', err);
+    throw err;
+  }
+
+  return optimistic;
+};
+
+/**
+ * Updates an existing staff member in local storage and persists to PostgreSQL backend
+ */
+export const updateStaffMember = async (staffId, updatedFields) => {
+  if (staffId && updatedFields.workExperience !== undefined) {
+    setStoredStaffExperience(staffId, updatedFields.workExperience);
+  }
+
+  const currentList = getMasterStaff();
+  const fullName = `${updatedFields.firstName || ''} ${updatedFields.lastName || ''}`.trim() || updatedFields.name?.trim();
+  const desig = updatedFields.designation?.trim() || updatedFields.position?.trim() || 'Stylist';
+
+  const updated = currentList.map(s => {
+    if (String(s.id) === String(staffId)) {
+      return {
+        ...s,
+        ...updatedFields,
+        ...(fullName ? { name: fullName } : {}),
+        phone: updatedFields.mobile || updatedFields.phone || s.phone,
+        mobile: updatedFields.mobile || updatedFields.phone || s.mobile,
+        position: desig,
+        designation: desig,
+      };
+    }
+    return s;
+  });
+
+  saveMasterStaff(updated);
+
+  // If staff has a UUID in PostgreSQL, update backend
+  const isUuid = /^[0-9a-fA-F-]{36}$/.test(String(staffId));
+  if (isUuid) {
+    (async () => {
+      try {
+        const expPayload = updatedFields.workExperience !== undefined
+          ? (Array.isArray(updatedFields.workExperience) && updatedFields.workExperience.length > 0
+              ? `EXP_DATA:${JSON.stringify({ exp: updatedFields.workExperience, addr: updatedFields.address || '' })}`
+              : (updatedFields.address || ''))
+          : (updatedFields.address !== undefined ? updatedFields.address : undefined);
+
+        const payload = {
+          personalDetails: {
+            ...(updatedFields.firstName ? { firstName: updatedFields.firstName } : {}),
+            ...(updatedFields.lastName ? { lastName: updatedFields.lastName } : {}),
+            ...(fullName ? { displayName: fullName } : {}),
+            ...(updatedFields.mobile ? { mobile: updatedFields.mobile } : {}),
+            ...(updatedFields.email !== undefined ? { email: updatedFields.email } : {}),
+            ...(updatedFields.gender ? { gender: updatedFields.gender } : {}),
+            ...(updatedFields.dob ? { dob: updatedFields.dob } : {}),
+            ...(expPayload !== undefined ? { address: expPayload } : {}),
+          },
+          joiningDetails: {
+            ...(desig ? { designationId: desig } : {}),
+            ...(updatedFields.empNo ? { employeeNumber: updatedFields.empNo } : {}),
+            ...(updatedFields.workingHours ? { workingHours: updatedFields.workingHours } : {}),
+            ...(updatedFields.joiningDate ? { joiningDate: updatedFields.joiningDate } : {}),
+            ...(updatedFields.reportingTo !== undefined ? { reportingToId: updatedFields.reportingTo } : {}),
+          },
+          ...(updatedFields.documents !== undefined ? {
+            documents: Array.isArray(updatedFields.documents) ? updatedFields.documents.map(d => ({
+              documentType: d.type || d.documentType || 'Identity Proof',
+              documentNumber: d.number || d.documentNumber || '',
+              documentUrl: d.url || d.documentUrl || 'https://placeholder.internal/doc',
+            })) : []
+          } : {}),
+          bankDetails: {
+            ...(updatedFields.bankName ? { bankName: updatedFields.bankName } : {}),
+            ...(updatedFields.branch ? { branch: updatedFields.branch } : {}),
+            ...(updatedFields.accountNumber ? { accountNumber: updatedFields.accountNumber } : {}),
+            ...(updatedFields.ifsc ? { ifsc: updatedFields.ifsc } : {}),
+          },
+          appointmentSettings: {
+            ...(updatedFields.enableAppointments !== undefined ? { enableAppointments: updatedFields.enableAppointments } : {}),
+            ...(updatedFields.showAppointmentsInDashboard !== undefined ? { showAllAppointments: updatedFields.showAppointmentsInDashboard } : {}),
+          },
+          ...(updatedFields.weeklyOff ? { weeklySchedule: toBackendWeeklyOff(updatedFields.weeklyOff) } : {}),
+        };
+        await staffApi.updateStaff(staffId, payload);
+      } catch (err) {
+        console.warn('Backend staff update failed:', err);
+      }
+    })();
+  }
+
+  return updated;
+};
+
+/**
+ * Toggles staff active status in local storage and backend
+ */
+export const toggleStaffStatusInBackend = async (staffId, newStatus) => {
+  const isUuid = /^[0-9a-fA-F-]{36}$/.test(String(staffId));
+  if (isUuid) {
+    try {
+      await staffApi.updateStaffStatus(staffId, newStatus);
+    } catch (err) {
+      console.warn('Failed to update staff status in backend:', err);
+    }
   }
 };
+
+/**
+ * Deletes staff member from local storage and backend PostgreSQL
+ */
+export const deleteStaffMember = async (staffId) => {
+  const currentList = getMasterStaff();
+  const updated = currentList.filter(s => String(s.id) !== String(staffId));
+  saveMasterStaff(updated);
+
+  delete inMemoryWorkExpMap[staffId];
+
+  const isUuid = /^[0-9a-fA-F-]{36}$/.test(String(staffId));
+  if (isUuid) {
+    try {
+      await staffApi.deleteStaff(staffId);
+    } catch (err) {
+      console.warn('Backend delete staff failed:', err);
+    }
+  }
+  return updated;
+};
+
+/**
+ * Syncs staff from PostgreSQL backend into localStorage and fires update event
+ */
+export const syncStaffFromBackend = async () => {
+  try {
+    const res = await staffApi.getStaffList({ limit: 100 });
+    hasFetchedStaffFromBackend = true;
+    if (res?.success && Array.isArray(res?.data?.items)) {
+      const backendStaff = res.data.items.map(mapBackendStaffToFrontend);
+      saveMasterStaff(backendStaff);
+      return backendStaff;
+    }
+  } catch (err) {
+    console.warn('syncStaffFromBackend failed, keeping local staff:', err);
+  }
+  return getMasterStaff();
+};
+
 
 

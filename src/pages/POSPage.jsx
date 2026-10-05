@@ -2,17 +2,18 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Search, Calendar, Plus, CreditCard, Banknote, Smartphone, X, ChevronDown, Check, User, Printer, Download, MessageCircle, CheckCircle2, GitFork, Clock, Gift, Sparkles, Edit2, Wallet, Award } from 'lucide-react';
 import { services as servicesDataImport, serviceCategories, paymentMethods, customers, staffMembers, timeSlots } from '../data/mockData';
-import { saveOrder, cancelOrderInStore, getNextInvoiceId } from '../utils/orderStorage';
+import { saveOrder, cancelOrderInStore, getNextInvoiceId, syncOrdersFromBackend, getOrders } from '../utils/orderStorage';
 import { saveAppointment, updateAppointment } from '../utils/appointmentStorage';
-import { getMasterServices, normalizeCategory, getServiceHeader } from '../utils/serviceStorage';
-import { getMasterProducts } from '../utils/productStorage';
-import { getMasterStaff } from '../utils/staffStorage';
-import { getCustomers, addCustomer, updateCustomer } from '../utils/customerStorage';
-import { getPackages } from '../utils/packageStorage';
+import { getMasterServices, saveMasterServices, normalizeCategory, getServiceHeader } from '../utils/serviceStorage';
+import { getMasterProducts, saveMasterProducts } from '../utils/productStorage';
+import { getMasterStaff, syncStaffFromBackend } from '../utils/staffStorage';
+import { getCustomers, addCustomer, updateCustomer, fetchCustomersFromBackend } from '../utils/customerStorage';
+import { getPackages, savePackages, mapBackendPackageToFrontend } from '../utils/packageStorage';
 import { getMemberships } from '../utils/membershipStorage';
 import { getActiveTenant, isReadOnlySession, notifyReadOnlyBlocked } from '../utils/saasStorage';
 import { getDisposables, recordConsumption, getDisposablePriceForUnit } from '../utils/disposablesStorage';
 import { getPackageBreakdown } from '../components/common/InvoiceBillModal';
+import { serviceApi, productApi, packageApi, guestApi } from '../api/client';
 
 const sampleProducts = [
   { id: 'p1', name: 'fair and lovely', price: 20, header: 'Skin & Face Products', category: 'SKIN' },
@@ -196,43 +197,7 @@ const POSAddGuestModal = ({ isOpen, onClose, onGuestAdded }) => {
             </div>
           </div>
 
-          {/* Row 4: Loyalty Tier + Points */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-100">
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 uppercase mb-1.5 flex items-center gap-1.5">
-                <Award size={14} className="text-amber-500" />
-                <span>Loyalty Tier</span>
-              </label>
-              <select
-                value={formData.loyaltyTier}
-                onChange={(e) => handleTierChange(e.target.value)}
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white text-slate-700 focus:outline-none focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 cursor-pointer"
-              >
-                <option value="Standard">Standard (0 pts)</option>
-                <option value="Silver">Silver (100 pts)</option>
-                <option value="Gold">Gold (250 pts)</option>
-                <option value="Platinum VIP">Platinum VIP (500 pts)</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 uppercase mb-1.5">
-                Loyalty Points
-              </label>
-              <div className="relative">
-                <input
-                  type="number"
-                  min="0"
-                  value={formData.loyaltyPoints}
-                  onChange={(e) => handleChange('loyaltyPoints', e.target.value)}
-                  placeholder="0"
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600"
-                />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400 pointer-events-none">
-                  pts
-                </span>
-              </div>
-            </div>
-          </div>
+
         </div>
 
         {/* Footer */}
@@ -522,12 +487,9 @@ Grand Total: ₹ ${order.grandTotal}
                     )}
                   </span>
                 )}
-                <span className="text-xs font-semibold px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 ml-2 uppercase">
-                  {tenant?.planName || 'RESPARK'}
-                </span>
               </div>
               <p className="text-[11px] font-medium text-slate-500 tracking-wide mt-0.5">
-                {tenant?.tagline || 'Manage Smarter, Grow Faster'}
+                {tenant?.tagline || 'Excellence in Beauty & Care'}
               </p>
             </div>
 
@@ -917,6 +879,84 @@ const POSPage = () => {
   const [guestList, setGuestList] = useState(() => getCustomers());
 
   useEffect(() => {
+    const fetchLiveServices = async () => {
+      try {
+        const res = await serviceApi.getServices();
+        if (res?.success && Array.isArray(res.data) && res.data.length > 0) {
+          const mapped = res.data.map(item => {
+            const catName = item.category?.name || 'Services';
+            const formattedHeader = catName.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+            const durMinutes = item.durationMinutes ?? ((item.hour || 0) * 60 + (item.minute || 0)) ?? 30;
+            return {
+              id: item.id,
+              name: item.name,
+              category: catName,
+              categoryId: item.categoryId,
+              gender: item.group || 'Both',
+              price: Number(item.price),
+              duration: `${durMinutes}m`,
+              header: formattedHeader,
+              isActive: item.isActive !== false,
+            };
+          });
+          setMasterServices(mapped);
+          saveMasterServices(mapped);
+        }
+      } catch (err) {
+        console.warn('POS live services fetch fallback:', err);
+      }
+    };
+
+    const fetchLiveProducts = async () => {
+      try {
+        const res = await productApi.getProducts();
+        const items = res?.data?.items || (Array.isArray(res?.data) ? res.data : []);
+        if (Array.isArray(items) && items.length > 0) {
+          const mapped = items.map(p => {
+            const userCategory = p.category?.name || p.productTag || 'General';
+            return {
+              id: p.id,
+              name: p.name,
+              sku: p.storeSku || 'SKU-' + p.id.slice(0, 6),
+              price: Number(p.price) || 0,
+              salePrice: Number(p.salePrice) || Number(p.price) || 0,
+              barcode: p.barcode || '1234',
+              stock: p.currentStock ?? p.stock ?? 0,
+              header: userCategory,
+              category: userCategory.toUpperCase(),
+              productTag: userCategory,
+              categoryId: p.categoryId,
+              isActive: p.isActive !== false,
+            };
+          });
+          setMasterProducts(mapped);
+          saveMasterProducts(mapped);
+        }
+      } catch (err) {
+        console.warn('POS live products fetch fallback:', err);
+      }
+    };
+
+    const fetchLivePackages = async () => {
+      try {
+        const res = await packageApi.getPackages();
+        const items = res?.data?.items || (Array.isArray(res?.data) ? res.data : []);
+        if (Array.isArray(items) && items.length > 0) {
+          const mapped = items.map(mapBackendPackageToFrontend);
+          setPackagesList(mapped);
+          savePackages(mapped);
+        }
+      } catch (err) {
+        console.warn('POS live packages fetch fallback:', err);
+      }
+    };
+
+    fetchLiveServices();
+    fetchLiveProducts();
+    fetchLivePackages();
+    fetchCustomersFromBackend();
+    syncStaffFromBackend();
+
     const handleUpdate = () => {
       setMasterServices(getMasterServices());
       setMasterProducts(getMasterProducts());
@@ -928,6 +968,10 @@ const POSPage = () => {
 
     const handleTenantChanged = () => {
       handleUpdate();
+      fetchLiveServices();
+      fetchLiveProducts();
+      fetchLivePackages();
+      fetchCustomersFromBackend();
       // Clear unsaved invoice and guest when company changes
       setInvoiceItems([]);
       setSelectedGuest(null);
@@ -975,15 +1019,19 @@ const POSPage = () => {
   // Dynamically compute unique service categories present in master services catalog
   const categories = useMemo(() => {
     const cats = Array.from(new Set(allServices.map(s => s.category).filter(Boolean)));
-    return cats.length > 0 ? cats : ['HAIR'];
+    return cats;
   }, [allServices]);
 
   const [gender, setGender] = useState('Female');
-  const [activeCategory, setActiveCategory] = useState('HAIR');
+  const [activeCategory, setActiveCategory] = useState('');
 
   useEffect(() => {
-    if (categories.length > 0 && !categories.includes(activeCategory)) {
-      setActiveCategory(categories[0]);
+    if (categories.length > 0) {
+      if (!activeCategory || !categories.includes(activeCategory)) {
+        setActiveCategory(categories[0]);
+      }
+    } else {
+      setActiveCategory('');
     }
   }, [categories, activeCategory]);
   const [activeMode, setActiveMode] = useState('Services'); // Services, Products, Disposables, Packages, Memberships
@@ -1014,6 +1062,164 @@ const POSPage = () => {
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState(null); // Null until user clicks a payment method
   const [toast, setToast] = useState(null);
   const [fromAppointmentId, setFromAppointmentId] = useState(null);
+
+  const customerActivePackages = useMemo(() => {
+    if (!selectedGuest) return [];
+    let list = [];
+    if (Array.isArray(selectedGuest.packages) && selectedGuest.packages.length > 0) {
+      list = [...selectedGuest.packages];
+    } else if (selectedGuest.id) {
+      const match = guestList.find(g => String(g.id) === String(selectedGuest.id) || (g.mobile && g.mobile === selectedGuest.mobile));
+      if (match && Array.isArray(match.packages) && match.packages.length > 0) {
+        list = [...match.packages];
+      }
+    }
+
+    // 1. Scan historical orders to detect any packages purchased by this customer
+    try {
+      const allOrders = getOrders();
+      const guestOrders = allOrders.filter(o => {
+        const g = o.guest || {};
+        const phoneMatch = selectedGuest.mobile && g.mobile && String(g.mobile).replace(/\D/g, '') === String(selectedGuest.mobile).replace(/\D/g, '');
+        const idMatch = selectedGuest.id && g.id && String(g.id) === String(selectedGuest.id);
+        const nameMatch = selectedGuest.name && (g.name === selectedGuest.name || o.customer === selectedGuest.name);
+        return phoneMatch || idMatch || nameMatch;
+      });
+
+      guestOrders.forEach(o => {
+        (o.items || []).forEach(item => {
+          const isPkg = item.itemType === 'package' || 
+                        item.category === 'PACKAGE' || 
+                        (item.header && String(item.header).toLowerCase().includes('package')) ||
+                        packagesList.some(p => p.name?.toLowerCase() === item.name?.toLowerCase());
+          if (isPkg) {
+            const catalogPkg = packagesList.find(p => p.name?.toLowerCase() === item.name?.toLowerCase());
+            const totalSess = Number(item.totalSessions || catalogPkg?.totalSessions || 8);
+            const exists = list.some(existing => existing.name?.toLowerCase() === item.name?.toLowerCase());
+            if (!exists) {
+              list.push({
+                id: 'order_pkg_' + (item.id || item.name) + '_' + (o.id || o.orderNumber || Date.now()),
+                packageId: item.id || catalogPkg?.id,
+                name: item.name,
+                totalSessions: totalSess,
+                remainingSessions: totalSess,
+                price: item.price,
+                services: item.services || catalogPkg?.services || item.name,
+                status: 'ACTIVE',
+                purchaseDate: o.date || new Date().toISOString()
+              });
+            }
+          }
+        });
+      });
+
+      // Calculate total redeemed sessions per package from historical orders
+      const redeemedCountByPkg = {};
+      guestOrders.forEach(o => {
+        const seenInThisOrder = new Set();
+        (o.items || []).forEach(item => {
+          const isRedeem = item.category === 'PACKAGE_REDEMPTION' ||
+                           item.itemType === 'package_redemption' ||
+                           (item.name && String(item.name).toLowerCase().startsWith('redemption:'));
+          if (isRedeem) {
+            const cleanName = String(item.name).replace(/^redemption:\s*/i, '').trim().toLowerCase();
+            const qty = Number(item.qty) || 1;
+            seenInThisOrder.add(cleanName);
+            redeemedCountByPkg[cleanName] = (redeemedCountByPkg[cleanName] || 0) + qty;
+          }
+        });
+        (o.packageRedemptions || []).forEach(red => {
+          const cleanName = String(red.packageName || '').trim().toLowerCase();
+          if (!seenInThisOrder.has(cleanName)) {
+            redeemedCountByPkg[cleanName] = (redeemedCountByPkg[cleanName] || 0) + (Number(red.sessionsUsed) || 1);
+          }
+        });
+      });
+
+      // Apply accurate session remaining counts (totalSessions - redeemedCount)
+      list.forEach(p => {
+        const key = (p.name || '').trim().toLowerCase();
+        const catalogPkg = packagesList.find(cp => cp.name?.toLowerCase() === key);
+        const total = Number(p.totalSessions || catalogPkg?.totalSessions || 1);
+        const redeemed = redeemedCountByPkg[key] || 0;
+        p.totalSessions = total;
+        p.remainingSessions = Math.max(0, total - redeemed);
+        p.status = p.remainingSessions === 0 ? 'COMPLETED' : 'ACTIVE';
+      });
+    } catch (orderScanErr) {
+      console.warn('Orders package scan fallback:', orderScanErr);
+    }
+    
+    // 2. Fallback for customer profile with package name string (e.g. Bhanu's package)
+    if (list.length === 0 && selectedGuest.package && selectedGuest.package !== '-') {
+      const catalogPkg = packagesList.find(p => p.name?.toLowerCase() === selectedGuest.package?.toLowerCase());
+      const sess = Number(catalogPkg?.totalSessions || selectedGuest.packageCount || 8);
+      list = [{
+        id: 'legacy_pkg_' + (selectedGuest.id || '1'),
+        name: selectedGuest.package,
+        totalSessions: sess,
+        remainingSessions: sess,
+        services: selectedGuest.package,
+        status: 'ACTIVE',
+      }];
+    }
+
+    return list.filter(p => {
+      const rem = p.remainingSessions !== undefined ? Number(p.remainingSessions) : Number(p.totalSessions || 1);
+      return rem > 0 && p.status !== 'COMPLETED';
+    });
+  }, [selectedGuest, guestList, packagesList]);
+
+  const handleSelectCustomer = async (guest) => {
+    setSelectedGuest(guest);
+    setShowGuestDropdown(false);
+    setGuestSearch('');
+
+    if (guest?.id) {
+      try {
+        const full = await guestApi.getGuestById(guest.id);
+        const data = full?.data?.guest || full?.data;
+        if (data && (data.packages || data.guestPackages)) {
+          const pkgs = data.packages || data.guestPackages;
+          setSelectedGuest(prev => (prev && String(prev.id) === String(guest.id) ? { ...prev, packages: pkgs } : prev));
+        }
+      } catch (err) {}
+    }
+  };
+
+  const handleRedeemPackageSession = (pkg) => {
+    const existing = invoiceItems.find(i => i.itemType === 'package_redemption' && (i.packageId === pkg.id || i.packageId === pkg.packageId));
+    if (existing) {
+      showToast('error', `A session for "${pkg.name}" is already in this invoice.`);
+      return;
+    }
+    const rem = pkg.remainingSessions !== undefined ? Number(pkg.remainingSessions) : Number(pkg.totalSessions || 1);
+    if (rem <= 0) {
+      showToast('error', `No remaining sessions left for "${pkg.name}".`);
+      return;
+    }
+    const redemptionItem = {
+      id: 'pkg_redeem_' + Date.now(),
+      packageId: pkg.id || pkg.packageId,
+      name: `Redemption: ${pkg.name}`,
+      serviceName: typeof pkg.services === 'string' ? pkg.services : (pkg.services?.text || pkg.name),
+      category: 'PACKAGE_REDEMPTION',
+      itemType: 'package_redemption',
+      price: 0,
+      qty: 1,
+      discPercent: 0,
+      discAmount: 0,
+      tax: 0,
+      subTotal: 0,
+      total: 0,
+      staff: masterStaff[0]?.name || '',
+      remainingBefore: rem,
+      remainingAfter: Math.max(0, rem - 1),
+      totalSessions: Number(pkg.totalSessions || rem),
+    };
+    setInvoiceItems(prev => [...prev, redemptionItem]);
+    showToast('success', `Added session redemption for "${pkg.name}" (1 session deduction).`);
+  };
 
   // Helper to get today's local date string in YYYY-MM-DD format
   const getTodayIsoDate = () => {
@@ -1128,6 +1334,10 @@ const POSPage = () => {
     }, 4500);
   };
 
+  useEffect(() => {
+    syncOrdersFromBackend().catch(() => {});
+  }, []);
+
   // Auto-load appointment data transferred from Appointment module via "Bill in POS"
   useEffect(() => {
     if (location.state?.fromAppointment) {
@@ -1150,7 +1360,7 @@ const POSPage = () => {
         name: appt.service || 'Hair Cut (With Shampoo)',
         price: origPrice,
         qty: 1,
-        staff: appt.staff || 'Respark Trial',
+        staff: appt.staff || 'Staff',
         discPercent: appt.discPercent !== undefined ? appt.discPercent : '',
         discAmount: appt.discAmount !== undefined ? appt.discAmount : '',
         subTotal: origPrice,
@@ -1228,13 +1438,8 @@ const POSPage = () => {
       showToast('error', 'Please add at least one service or product to the invoice.');
       return false;
     }
-    const missingStaff = invoiceItems.some(i => (i.itemType === 'service' || (!i.itemType && i.category !== 'PACKAGE' && i.category !== 'MEMBERSHIP')) && (!i.staff || i.staff.trim() === ''));
-    if (missingStaff) {
-      showToast('error', 'Error: Please select a staff member for all booked services.');
-      return false;
-    }
-    if (!selectedPaymentMethod) {
-      showToast('error', 'Please select a payment method before booking.');
+    if (!selectedPaymentMethod && grandTotal > 0) {
+      showToast('error', 'Please select a payment method before completing order.');
       return false;
     }
     const todayIso = getTodayIsoDate();
@@ -1257,159 +1462,266 @@ const POSPage = () => {
     setInvoiceItems(invoiceItems.filter(item => item.id !== id));
   };
 
-  // "Book Order" Button: Saves booking, syncs with Appointments, and immediately displays invoice bill
-  const handleCreate = () => {
+  // "Book Order" Button: Saves booking directly to PostgreSQL database (zero localStorage) and displays invoice bill
+  const handleCreate = async () => {
     if (isReadOnlySession()) {
       notifyReadOnlyBlocked('Booking or creating an order');
       return;
     }
     if (!validateOrder()) return;
 
-    const newInvoiceId = getNextInvoiceId();
-    const isPayAtSalon = selectedPaymentMethod === 'Pay at Salon';
-    const payStatus = isPayAtSalon ? 'Unpaid' : (selectedPaymentMethod ? 'Paid' : 'Unpaid');
+    try {
+      const isRedemptionOnly = grandTotal === 0 && packageRedemptionInvoiceItems.length > 0;
+      const effectivePaymentMethod = isRedemptionOnly ? (selectedPaymentMethod || 'Package Redemption') : (selectedPaymentMethod || 'Cash');
+      const isPayAtSalon = effectivePaymentMethod === 'Pay at Salon';
+      const payStatus = isPayAtSalon ? 'Unpaid' : 'Paid';
 
-    // Check if the order contains salon chair services
-    const hasServiceItems = invoiceItems.some(i => (i.itemType === 'service' || (!i.itemType && i.category !== 'PACKAGE' && i.category !== 'MEMBERSHIP' && i.category !== 'PRODUCT')) && i.itemType !== 'product' && i.itemType !== 'disposable' && i.itemType !== 'package' && i.itemType !== 'membership');
-    
-    // For pure retail products or packages, transaction is immediate (Completed if paid, Unpaid if Pay at Salon)
-    const orderStatus = hasServiceItems 
-      ? (isPayAtSalon ? 'Waiting' : 'In Progress') 
-      : (isPayAtSalon ? 'Unpaid' : 'Completed');
+      // Check if the order contains salon chair services or package session redemptions
+      const hasServiceItems = invoiceItems.some(i => (i.itemType === 'service' || i.itemType === 'package_redemption' || (!i.itemType && i.category !== 'PACKAGE' && i.category !== 'MEMBERSHIP' && i.category !== 'PRODUCT')) && i.itemType !== 'product' && i.itemType !== 'disposable' && i.itemType !== 'package' && i.itemType !== 'membership');
+      
+      // For pure retail products or packages, transaction is immediate (Completed if paid, Unpaid if Pay at Salon)
+      const orderStatus = hasServiceItems 
+        ? (isPayAtSalon ? 'Waiting' : 'In Progress') 
+        : (isPayAtSalon ? 'Unpaid' : 'Completed');
 
-    const finalPayments = isPayAtSalon 
-      ? [] 
-      : (selectedPaymentMethod ? [{ method: selectedPaymentMethod, amount: grandTotal }] : [{ method: 'Cash', amount: grandTotal }]);
-    const finalMethod = selectedPaymentMethod || (isPayAtSalon ? 'Pay at Salon' : 'Cash');
+      const finalPayments = isPayAtSalon 
+        ? [] 
+        : (isRedemptionOnly 
+            ? [{ method: 'Package Redemption', amount: 0 }] 
+            : [{ method: effectivePaymentMethod, amount: grandTotal }]);
+      const finalMethod = effectivePaymentMethod;
 
-    const newOrder = {
-      id: newInvoiceId,
-      invoiceId: newInvoiceId,
-      invoiceNo: newInvoiceId,
-      date: selectedDate,
-      dateDisplay: formatDateDisplay(selectedDate),
-      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-      guest: selectedGuest,
-      items: [...invoiceItems],
-      subTotal: grandTotal,
-      grandTotal: grandTotal,
-      instruction: instruction,
-      payments: finalPayments,
-      paymentMethod: finalMethod,
-      paymentStatus: payStatus,
-      status: orderStatus,
-    };
-    saveOrder(newOrder);
+      const packageRedemptions = invoiceItems.filter(i => i.itemType === 'package_redemption');
 
-    // If packages were sold to a guest, record package subscription in CRM
-    if (selectedGuest && packageInvoiceItems.length > 0) {
-      try {
-        const pkgNames = packageInvoiceItems.map(p => p.name).join(', ');
-        updateCustomer({
-          ...selectedGuest,
-          package: pkgNames,
-          packageCount: packageInvoiceItems.length,
-        });
-      } catch (err) {
-        console.error(err);
-      }
-    }
-
-    // Auto-record consumption for any disposables in invoice
-    invoiceItems.filter(i => i.itemType === 'disposable').forEach(disp => {
-      const q = Number(disp.qty) || 1;
-      const rowAmt = Math.max(0, (disp.price * q) - (parseFloat(disp.discAmount) || 0));
-      recordConsumption({
-        itemId: disp.id,
-        quantity: q,
-        unit: disp.selectedUnit || disp.unit || 'Pack',
-        unitCost: disp.price,
-        totalCost: rowAmt,
-        staffName: selectedGuest ? `Service for ${selectedGuest.name}` : 'POS Customer',
-        purpose: `POS Order #${newInvoiceId}`,
-        notes: `Customer Order #${newInvoiceId} (${disp.selectedUnit || 'Pack'} x ${q})`
-      });
-    });
-
-    // Auto-sync POS order into Appointments list & calendar only if there are service items
-    const serviceItemsForAppt = invoiceItems.filter(i => (i.itemType === 'service' || (!i.itemType && i.category !== 'PACKAGE' && i.category !== 'MEMBERSHIP')) && i.itemType !== 'product' && i.itemType !== 'disposable' && i.itemType !== 'package' && i.itemType !== 'membership');
-    const productItemsForAppt = invoiceItems.filter(i => i.itemType === 'product');
-    const disposableItemsForAppt = invoiceItems.filter(i => i.itemType === 'disposable');
-    if (serviceItemsForAppt.length > 0) {
-      const primaryStaff = serviceItemsForAppt[0]?.staff || 'Respark Trial';
-      const serviceTitle = serviceItemsForAppt.map(i => i.name).join(', ') || 'Salon Service';
-      const servicePrice = serviceItemsForAppt.reduce((acc, i) => acc + (i.price * (i.qty || 1) - (parseFloat(i.discAmount) || 0)), 0);
-      const apptData = {
-        guest: selectedGuest.name,
-        mobile: selectedGuest.mobile || '+91 9876543210',
-        service: serviceTitle,
-        price: grandTotal,
-        servicesPrice: servicePrice,
-        paymentMethod: finalMethod,
-        paymentStatus: payStatus,
-        staff: primaryStaff,
+      const newOrder = {
+        date: selectedDate,
+        dateDisplay: formatDateDisplay(selectedDate),
+        time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
         timeSlot: selectedTimeSlot,
-        duration: '45 min',
-        status: orderStatus,
-        date: formatDateDisplay(selectedDate),
-        instruction: instruction || 'Booked in POS',
-        orderId: newInvoiceId,
-        invoiceId: newInvoiceId,
+        guest: selectedGuest,
         items: [...invoiceItems],
-        products: productItemsForAppt,
-        services: serviceItemsForAppt,
-        disposables: disposableItemsForAppt,
         subTotal: grandTotal,
         grandTotal: grandTotal,
+        instruction: instruction,
+        payments: finalPayments,
+        paymentMethod: finalMethod,
+        paymentStatus: payStatus,
+        status: orderStatus,
+        packageRedemptions: packageRedemptions.map(r => ({
+          packageId: r.packageId,
+          packageName: r.name.replace(/^Redemption:\s*/, ''),
+          serviceName: r.serviceName,
+          staff: r.staff || 'Staff',
+          sessionsUsed: 1,
+          remainingAfter: r.remainingAfter,
+          totalSessions: r.totalSessions,
+          date: selectedDate,
+        })),
       };
 
-      if (fromAppointmentId) {
-        updateAppointment(fromAppointmentId, apptData);
-      } else {
-        saveAppointment({
-          ...apptData,
-          id: Date.now(),
-        });
-      }
-    }
+      // 1. Save directly into PostgreSQL database (Zero Local Storage for orders)
+      const createdDbOrder = await saveOrder(newOrder);
+      const effectiveOrderNumber = createdDbOrder?.orderNumber || createdDbOrder?.invoiceNo || `INV-${Date.now().toString().slice(-4)}`;
 
-    // Update customer stats in customerStorage if guest is registered
-    if (selectedGuest) {
-      try {
-        const allCusts = getCustomers();
-        const cleanMobile = (selectedGuest.mobile || '').replace(/\D/g, '');
-        const existingCust = allCusts.find(c => 
-          (c.id && selectedGuest.id && String(c.id) === String(selectedGuest.id)) ||
-          (cleanMobile && c.mobile && c.mobile.replace(/\D/g, '') === cleanMobile) ||
-          (c.name && selectedGuest.name && c.name.toLowerCase() === selectedGuest.name.toLowerCase())
-        );
-        if (existingCust) {
-          updateCustomer({
-            ...existingCust,
-            totalOrders: (existingCust.totalOrders || 0) + 1,
-            totalPurchaseAmount: (existingCust.totalPurchaseAmount || 0) + grandTotal,
-            lastVisited: formatDateDisplay(selectedDate)
+      // 2. Process Package Session Redemptions if any in invoice (Deducts 1 session, NO commission)
+      if (selectedGuest && packageRedemptions.length > 0) {
+        try {
+          let currentGuestPackages = Array.isArray(selectedGuest.packages) ? [...selectedGuest.packages] : [];
+          for (const item of packageRedemptions) {
+            try {
+              await guestApi.redeemPackageSession(selectedGuest.id, item.packageId, 1);
+            } catch (apiErr) {
+              console.warn('Backend redeemPackageSession fallback:', apiErr);
+            }
+            currentGuestPackages = currentGuestPackages.map(pkg => {
+              if (pkg.id === item.packageId || pkg.packageId === item.packageId) {
+                const prevRem = pkg.remainingSessions !== undefined ? Number(pkg.remainingSessions) : Number(pkg.totalSessions || 1);
+                const newRem = Math.max(0, prevRem - 1);
+                return {
+                  ...pkg,
+                  remainingSessions: newRem,
+                  status: newRem === 0 ? 'COMPLETED' : 'ACTIVE',
+                };
+              }
+              return pkg;
+            });
+          }
+          const updatedGuestObj = {
+            ...selectedGuest,
+            packages: currentGuestPackages,
+          };
+          setSelectedGuest(updatedGuestObj);
+          updateCustomer(updatedGuestObj);
+        } catch (err) {
+          console.error('Package redemption error:', err);
+        }
+      }
+
+      // 2b. If packages were sold to a guest, record package subscription and initialize sessions in CRM
+      if (selectedGuest && packageInvoiceItems.length > 0) {
+        try {
+          let currentGuestPackages = Array.isArray(selectedGuest.packages) ? [...selectedGuest.packages] : [];
+          for (const pkgItem of packageInvoiceItems) {
+            const sessionsCount = Number(pkgItem.totalSessions || 1);
+            const newPkgRecord = {
+              id: 'gp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
+              packageId: pkgItem.id,
+              name: pkgItem.name,
+              price: pkgItem.price,
+              validityDays: pkgItem.validityDays || 180,
+              totalSessions: sessionsCount,
+              remainingSessions: sessionsCount,
+              services: pkgItem.services || '',
+              status: 'ACTIVE',
+              purchaseDate: new Date().toISOString(),
+            };
+            currentGuestPackages.push(newPkgRecord);
+
+            try {
+              const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(pkgItem.id || ''));
+              await guestApi.addPackage(selectedGuest.id, {
+                packageId: isUuid ? pkgItem.id : null,
+                name: pkgItem.name,
+                price: Number(pkgItem.price) || 0,
+                validityDays: Number(pkgItem.validityDays) || 180,
+                totalSessions: sessionsCount,
+                services: [{ name: pkgItem.services || pkgItem.name, count: sessionsCount }],
+              });
+            } catch (backendPkgErr) {
+              console.warn('Backend addPackage sync fallback:', backendPkgErr);
+            }
+          }
+
+          const pkgNames = packageInvoiceItems.map(p => p.name).join(', ');
+          const updatedGuestObj = {
+            ...selectedGuest,
+            package: pkgNames,
+            packages: currentGuestPackages,
+            packageCount: currentGuestPackages.filter(p => p.status === 'ACTIVE').length,
+          };
+          setSelectedGuest(updatedGuestObj);
+          updateCustomer(updatedGuestObj);
+        } catch (err) {
+          console.error('Failed to attach package to guest in handleCreate:', err);
+        }
+      }
+
+      // 3. Auto-record consumption for any disposables in invoice
+      invoiceItems.filter(i => i.itemType === 'disposable').forEach(disp => {
+        const q = Number(disp.qty) || 1;
+        const rowAmt = Math.max(0, (disp.price * q) - (parseFloat(disp.discAmount) || 0));
+        recordConsumption({
+          itemId: disp.id,
+          quantity: q,
+          unit: disp.selectedUnit || disp.unit || 'Pack',
+          unitCost: disp.price,
+          totalCost: rowAmt,
+          staffName: selectedGuest ? `Service for ${selectedGuest.name}` : 'POS Customer',
+          purpose: `POS Order ${effectiveOrderNumber}`,
+          notes: `Customer Order ${effectiveOrderNumber} (${disp.selectedUnit || 'Pack'} x ${q})`
+        });
+      });
+
+      // 4. Auto-sync POS order into Appointments list & calendar for services or package session redemptions
+      const serviceItemsForAppt = invoiceItems.filter(i => (i.itemType === 'service' || (!i.itemType && i.category !== 'PACKAGE' && i.category !== 'MEMBERSHIP')) && i.itemType !== 'product' && i.itemType !== 'disposable' && i.itemType !== 'package' && i.itemType !== 'membership' && i.itemType !== 'package_redemption');
+      const redemptionsForAppt = invoiceItems.filter(i => i.itemType === 'package_redemption');
+      const productItemsForAppt = invoiceItems.filter(i => i.itemType === 'product');
+      const disposableItemsForAppt = invoiceItems.filter(i => i.itemType === 'disposable');
+
+      if (serviceItemsForAppt.length > 0 || redemptionsForAppt.length > 0) {
+        const rawStaff = serviceItemsForAppt[0]?.staff?.trim() || redemptionsForAppt[0]?.staff?.trim();
+        const primaryStaff = (rawStaff && rawStaff !== 'Select Staff') ? rawStaff : 'Unassigned';
+        const serviceTitles = [
+          ...serviceItemsForAppt.map(i => i.name),
+          ...redemptionsForAppt.map(i => i.serviceName ? `Package Session: ${i.serviceName}` : i.name)
+        ].join(', ') || 'Salon Service';
+        const servicePrice = serviceItemsForAppt.reduce((acc, i) => acc + (i.price * (i.qty || 1) - (parseFloat(i.discAmount) || 0)), 0);
+        const computedDurationMins = serviceItemsForAppt.reduce((acc, i) => acc + (parseInt(i.duration || i.durationMinutes) || 30), 0);
+        const apptData = {
+          guest: selectedGuest?.name || 'Walk-in Guest',
+          mobile: selectedGuest?.mobile || '+91 9876543210',
+          service: serviceTitles,
+          price: grandTotal,
+          servicesPrice: servicePrice,
+          paymentMethod: finalMethod,
+          paymentStatus: payStatus,
+          staff: primaryStaff,
+          timeSlot: selectedTimeSlot,
+          duration: computedDurationMins > 0 ? `${computedDurationMins} min` : '30 min',
+          status: orderStatus,
+          date: formatDateDisplay(selectedDate),
+          instruction: instruction || 'Booked in POS',
+          orderId: effectiveOrderNumber,
+          invoiceId: effectiveOrderNumber,
+          isPosOrder: true,
+          posOrderId: createdDbOrder?.id,
+          items: [...invoiceItems],
+          products: productItemsForAppt,
+          services: serviceItemsForAppt,
+          disposables: disposableItemsForAppt,
+          packageRedemptions: redemptionsForAppt,
+          subTotal: grandTotal,
+          grandTotal: grandTotal,
+        };
+
+        if (fromAppointmentId) {
+          updateAppointment(fromAppointmentId, apptData);
+        } else {
+          saveAppointment({
+            ...apptData,
+            id: createdDbOrder?.id || Date.now(),
+            backendId: createdDbOrder?.id,
           });
         }
-      } catch (e) {
-        console.error('Error updating customer order stats', e);
       }
+
+      // 5. Update customer stats in customerStorage if guest is registered
+      if (selectedGuest) {
+        try {
+          const allCusts = getCustomers();
+          const cleanMobile = (selectedGuest.mobile || '').replace(/\D/g, '');
+          const existingCust = allCusts.find(c => 
+            (c.id && selectedGuest.id && String(c.id) === String(selectedGuest.id)) ||
+            (cleanMobile && c.mobile && c.mobile.replace(/\D/g, '') === cleanMobile) ||
+            (c.name && selectedGuest.name && c.name.toLowerCase() === selectedGuest.name.toLowerCase())
+          );
+          if (existingCust) {
+            updateCustomer({
+              ...existingCust,
+              totalOrders: (existingCust.totalOrders || 0) + 1,
+              totalPurchaseAmount: (existingCust.totalPurchaseAmount || 0) + grandTotal,
+              lastVisited: formatDateDisplay(selectedDate)
+            });
+          }
+        } catch (e) {
+          console.error('Error updating customer order stats', e);
+        }
+      }
+
+      // 6. Directly open the Invoice Bill Modal with the PostgreSQL database record
+      const finalCompletedOrder = createdDbOrder || {
+        ...newOrder,
+        id: effectiveOrderNumber,
+        invoiceId: effectiveOrderNumber,
+        invoiceNo: effectiveOrderNumber,
+      };
+      setCompletedOrder(finalCompletedOrder);
+      setShowInvoiceBillModal(true);
+
+      // Reset invoice form so active order buttons are not shown
+      setActiveOrder(null);
+      setInvoiceItems([]);
+      setSelectedGuest(null);
+      setInstruction('');
+      setSelectedPaymentMethod(null);
+      setFromAppointmentId(null);
+      setPayments({ Cash: '', Card: '', HDFC: '', GPay: '', 'Phone Pay': '', Balance: '' });
+
+      showToast('success', `Order ${effectiveOrderNumber} saved in database!`);
+    } catch (err) {
+      console.error('Error placing order in database:', err);
+      showToast('error', `Failed to save order in database: ${err.message || 'Error'}`);
     }
-
-    // Directly open the Invoice Bill Modal
-    setCompletedOrder(newOrder);
-    setShowInvoiceBillModal(true);
-
-    // Reset invoice form so active order buttons are not shown
-    setActiveOrder(null);
-    setInvoiceItems([]);
-    setSelectedGuest(null);
-    setInstruction('');
-    setSelectedPaymentMethod(null);
-    setFromAppointmentId(null);
-    setPayments({ Cash: '', Card: '', HDFC: '', GPay: '', 'Phone Pay': '', Balance: '' });
-
-    showToast('success', `Appointment booked successfully for ${selectedGuest.name} at ${selectedTimeSlot} (${formatDateDisplay(selectedDate)})!`);
   };
 
   // Phase 2: "Update" Button (Screenshot 2)
@@ -1437,15 +1749,17 @@ const POSPage = () => {
   };
 
   // Phase 2: "Complete" Button (Screenshot 2)
-  const handleCompleteOrder = () => {
+  const handleCompleteOrder = async () => {
     if (!validateOrder()) return;
     const orderId = activeOrder?.id || getNextInvoiceId();
     const isPayAtSalon = selectedPaymentMethod === 'Pay at Salon';
     const payStatus = isPayAtSalon ? 'Unpaid' : 'Paid';
     const finalPayments = isPayAtSalon 
       ? [] 
-      : (selectedPaymentMethod ? [{ method: selectedPaymentMethod, amount: grandTotal }] : [{ method: 'Cash', amount: grandTotal }]);
-    const finalMethod = selectedPaymentMethod || (isPayAtSalon ? 'Pay at Salon' : 'Cash');
+      : (selectedPaymentMethod ? [{ method: selectedPaymentMethod, amount: grandTotal }] : (grandTotal === 0 ? [{ method: 'Package Redemption', amount: 0 }] : [{ method: 'Cash', amount: grandTotal }]));
+    const finalMethod = selectedPaymentMethod || (isPayAtSalon ? 'Pay at Salon' : (grandTotal === 0 ? 'Package Redemption' : 'Cash'));
+
+    const packageRedemptions = invoiceItems.filter(i => i.itemType === 'package_redemption');
 
     const finalOrder = {
       ...(activeOrder || { 
@@ -1454,6 +1768,7 @@ const POSPage = () => {
         invoiceNo: orderId, 
         time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) 
       }),
+      timeSlot: selectedTimeSlot,
       date: selectedDate,
       dateDisplay: formatDateDisplay(selectedDate),
       items: [...invoiceItems],
@@ -1465,21 +1780,101 @@ const POSPage = () => {
       paymentMethod: finalMethod,
       paymentStatus: payStatus,
       status: 'Completed',
+      packageRedemptions: packageRedemptions.map(r => ({
+        packageId: r.packageId,
+        packageName: r.name.replace(/^Redemption:\s*/, ''),
+        serviceName: r.serviceName,
+        staff: r.staff || 'Staff',
+        sessionsUsed: 1,
+        remainingAfter: r.remainingAfter,
+        totalSessions: r.totalSessions,
+        date: selectedDate,
+      })),
     };
     setCompletedOrder(finalOrder);
-    saveOrder(finalOrder);
+    const createdDbOrder = await saveOrder(finalOrder);
+    const effectiveOrderId = createdDbOrder?.orderNumber || createdDbOrder?.invoiceNo || orderId;
 
-    // If packages were sold to a guest, record package subscription in CRM
+    // 1. Process Package Session Redemptions (Deducts 1 session per redeemed package, NO commission)
+    if (selectedGuest && packageRedemptions.length > 0) {
+      try {
+        let currentGuestPackages = Array.isArray(selectedGuest.packages) ? [...selectedGuest.packages] : [];
+        for (const item of packageRedemptions) {
+          try {
+            await guestApi.redeemPackageSession(selectedGuest.id, item.packageId, 1);
+          } catch (apiErr) {
+            console.warn('Backend redeemPackageSession fallback:', apiErr);
+          }
+          currentGuestPackages = currentGuestPackages.map(pkg => {
+            if (pkg.id === item.packageId || pkg.packageId === item.packageId) {
+              const prevRem = pkg.remainingSessions !== undefined ? Number(pkg.remainingSessions) : Number(pkg.totalSessions || 1);
+              const newRem = Math.max(0, prevRem - 1);
+              return {
+                ...pkg,
+                remainingSessions: newRem,
+                status: newRem === 0 ? 'COMPLETED' : 'ACTIVE',
+              };
+            }
+            return pkg;
+          });
+        }
+        const updatedGuestObj = {
+          ...selectedGuest,
+          packages: currentGuestPackages,
+        };
+        setSelectedGuest(updatedGuestObj);
+        updateCustomer(updatedGuestObj);
+      } catch (err) {
+        console.error('Package redemption error:', err);
+      }
+    }
+
+    // 2. If packages were sold to a guest, record package subscription and initialize sessions in CRM
     if (selectedGuest && packageInvoiceItems.length > 0) {
       try {
+        let currentGuestPackages = Array.isArray(selectedGuest.packages) ? [...selectedGuest.packages] : [];
+        for (const pkgItem of packageInvoiceItems) {
+          const sessionsCount = Number(pkgItem.totalSessions || 1);
+          const newPkgRecord = {
+            id: 'gp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
+            packageId: pkgItem.id,
+            name: pkgItem.name,
+            price: pkgItem.price,
+            validityDays: pkgItem.validityDays || 180,
+            totalSessions: sessionsCount,
+            remainingSessions: sessionsCount,
+            services: pkgItem.services || '',
+            status: 'ACTIVE',
+            purchaseDate: new Date().toISOString(),
+          };
+          currentGuestPackages.push(newPkgRecord);
+
+          try {
+            const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(pkgItem.id || ''));
+            await guestApi.addPackage(selectedGuest.id, {
+              packageId: isUuid ? pkgItem.id : null,
+              name: pkgItem.name,
+              price: Number(pkgItem.price) || 0,
+              validityDays: Number(pkgItem.validityDays) || 180,
+              totalSessions: sessionsCount,
+              services: [{ name: pkgItem.services || pkgItem.name, count: sessionsCount }],
+            });
+          } catch (backendPkgErr) {
+            console.warn('Backend addPackage sync fallback:', backendPkgErr);
+          }
+        }
+
         const pkgNames = packageInvoiceItems.map(p => p.name).join(', ');
-        updateCustomer({
+        const updatedGuestObj = {
           ...selectedGuest,
           package: pkgNames,
-          packageCount: packageInvoiceItems.length,
-        });
+          packages: currentGuestPackages,
+          packageCount: currentGuestPackages.filter(p => p.status === 'ACTIVE').length,
+        };
+        setSelectedGuest(updatedGuestObj);
+        updateCustomer(updatedGuestObj);
       } catch (err) {
-        console.error(err);
+        console.error('Failed to attach package to guest:', err);
       }
     }
 
@@ -1504,9 +1899,11 @@ const POSPage = () => {
     const productItemsForAppt = invoiceItems.filter(i => i.itemType === 'product');
     const disposableItemsForAppt = invoiceItems.filter(i => i.itemType === 'disposable');
     if (serviceItemsForAppt.length > 0) {
-      const primaryStaff = serviceItemsForAppt[0]?.staff || 'Respark Trial';
+      const rawStaff = serviceItemsForAppt[0]?.staff?.trim();
+      const primaryStaff = (rawStaff && rawStaff !== 'Select Staff') ? rawStaff : 'Unassigned';
       const serviceTitle = serviceItemsForAppt.map(i => i.name).join(', ') || 'Salon Service';
       const servicePrice = serviceItemsForAppt.reduce((acc, i) => acc + (i.price * (i.qty || 1) - (parseFloat(i.discAmount) || 0)), 0);
+      const computedDurationMins = serviceItemsForAppt.reduce((acc, i) => acc + (parseInt(i.duration || i.durationMinutes) || 30), 0);
       const apptData = {
         guest: selectedGuest.name,
         mobile: selectedGuest.mobile || '+91 9876543210',
@@ -1517,12 +1914,14 @@ const POSPage = () => {
         paymentStatus: payStatus,
         staff: primaryStaff,
         timeSlot: selectedTimeSlot,
-        duration: '45 min',
+        duration: computedDurationMins > 0 ? `${computedDurationMins} min` : '30 min',
         status: 'Completed',
         date: formatDateDisplay(selectedDate),
         instruction: instruction || 'Billed & Completed in POS',
-        orderId: orderId,
-        invoiceId: orderId,
+        orderId: effectiveOrderId,
+        invoiceId: effectiveOrderId,
+        isPosOrder: true,
+        posOrderId: createdDbOrder?.id,
         items: [...invoiceItems],
         products: productItemsForAppt,
         services: serviceItemsForAppt,
@@ -1536,7 +1935,8 @@ const POSPage = () => {
       } else {
         saveAppointment({
           ...apptData,
-          id: Date.now(),
+          id: createdDbOrder?.id || Date.now(),
+          backendId: createdDbOrder?.id,
         });
       }
     }
@@ -1596,7 +1996,7 @@ const POSPage = () => {
   };
 
   // "Create & Complete" Button (Screenshot 1)
-  const handleCreateAndComplete = () => {
+  const handleCreateAndComplete = async () => {
     if (isReadOnlySession()) {
       notifyReadOnlyBlocked('Completing a POS order');
       return;
@@ -1607,8 +2007,10 @@ const POSPage = () => {
     const payStatus = isPayAtSalon ? 'Unpaid' : 'Paid';
     const finalPayments = isPayAtSalon 
       ? [] 
-      : (selectedPaymentMethod ? [{ method: selectedPaymentMethod, amount: grandTotal }] : [{ method: 'Cash', amount: grandTotal }]);
-    const finalMethod = selectedPaymentMethod || (isPayAtSalon ? 'Pay at Salon' : 'Cash');
+      : (selectedPaymentMethod ? [{ method: selectedPaymentMethod, amount: grandTotal }] : (grandTotal === 0 ? [{ method: 'Package Redemption', amount: 0 }] : [{ method: 'Cash', amount: grandTotal }]));
+    const finalMethod = selectedPaymentMethod || (isPayAtSalon ? 'Pay at Salon' : (grandTotal === 0 ? 'Package Redemption' : 'Cash'));
+
+    const packageRedemptions = invoiceItems.filter(i => i.itemType === 'package_redemption');
 
     const finalOrder = {
       id: newInvoiceId,
@@ -1617,6 +2019,7 @@ const POSPage = () => {
       date: selectedDate,
       dateDisplay: formatDateDisplay(selectedDate),
       time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+      timeSlot: selectedTimeSlot,
       guest: selectedGuest,
       items: [...invoiceItems],
       subTotal: grandTotal,
@@ -1626,19 +2029,99 @@ const POSPage = () => {
       paymentMethod: finalMethod,
       paymentStatus: payStatus,
       status: 'Completed',
+      packageRedemptions: packageRedemptions.map(r => ({
+        packageId: r.packageId,
+        packageName: r.name.replace(/^Redemption:\s*/, ''),
+        serviceName: r.serviceName,
+        staff: r.staff || 'Staff',
+        sessionsUsed: 1,
+        remainingAfter: r.remainingAfter,
+        totalSessions: r.totalSessions,
+        date: selectedDate,
+      })),
     };
     setCompletedOrder(finalOrder);
-    saveOrder(finalOrder);
+    const createdDbOrder = await saveOrder(finalOrder);
+    const effectiveInvoiceId = createdDbOrder?.orderNumber || createdDbOrder?.invoiceNo || newInvoiceId;
 
-    // If packages were sold to a guest, record package subscription in CRM
+    // 1. Process Package Session Redemptions (Deducts 1 session per redeemed package, NO commission)
+    if (selectedGuest && packageRedemptions.length > 0) {
+      try {
+        let currentGuestPackages = Array.isArray(selectedGuest.packages) ? [...selectedGuest.packages] : [];
+        for (const item of packageRedemptions) {
+          try {
+            await guestApi.redeemPackageSession(selectedGuest.id, item.packageId, 1);
+          } catch (apiErr) {
+            console.warn('Backend redeemPackageSession fallback:', apiErr);
+          }
+          currentGuestPackages = currentGuestPackages.map(pkg => {
+            if (pkg.id === item.packageId || pkg.packageId === item.packageId) {
+              const prevRem = pkg.remainingSessions !== undefined ? Number(pkg.remainingSessions) : Number(pkg.totalSessions || 1);
+              const newRem = Math.max(0, prevRem - 1);
+              return {
+                ...pkg,
+                remainingSessions: newRem,
+                status: newRem === 0 ? 'COMPLETED' : 'ACTIVE',
+              };
+            }
+            return pkg;
+          });
+        }
+        const updatedGuestObj = {
+          ...selectedGuest,
+          packages: currentGuestPackages,
+        };
+        setSelectedGuest(updatedGuestObj);
+        updateCustomer(updatedGuestObj);
+      } catch (err) {
+        console.error('Package redemption error:', err);
+      }
+    }
+
+    // 2. If packages were sold to a guest, record package subscription and initialize sessions in CRM
     if (selectedGuest && packageInvoiceItems.length > 0) {
       try {
+        let currentGuestPackages = Array.isArray(selectedGuest.packages) ? [...selectedGuest.packages] : [];
+        for (const pkgItem of packageInvoiceItems) {
+          const sessionsCount = Number(pkgItem.totalSessions || 1);
+          const newPkgRecord = {
+            id: 'gp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
+            packageId: pkgItem.id,
+            name: pkgItem.name,
+            price: pkgItem.price,
+            validityDays: pkgItem.validityDays || 180,
+            totalSessions: sessionsCount,
+            remainingSessions: sessionsCount,
+            services: pkgItem.services || '',
+            status: 'ACTIVE',
+            purchaseDate: new Date().toISOString(),
+          };
+          currentGuestPackages.push(newPkgRecord);
+
+          try {
+            const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(pkgItem.id || ''));
+            await guestApi.addPackage(selectedGuest.id, {
+              packageId: isUuid ? pkgItem.id : null,
+              name: pkgItem.name,
+              price: Number(pkgItem.price) || 0,
+              validityDays: Number(pkgItem.validityDays) || 180,
+              totalSessions: sessionsCount,
+              services: [{ name: pkgItem.services || pkgItem.name, count: sessionsCount }],
+            });
+          } catch (backendPkgErr) {
+            console.warn('Backend addPackage sync fallback:', backendPkgErr);
+          }
+        }
+
         const pkgNames = packageInvoiceItems.map(p => p.name).join(', ');
-        updateCustomer({
+        const updatedGuestObj = {
           ...selectedGuest,
           package: pkgNames,
-          packageCount: packageInvoiceItems.length,
-        });
+          packages: currentGuestPackages,
+          packageCount: currentGuestPackages.filter(p => p.status === 'ACTIVE').length,
+        };
+        setSelectedGuest(updatedGuestObj);
+        updateCustomer(updatedGuestObj);
       } catch (err) {
         console.error(err);
       }
@@ -1665,9 +2148,11 @@ const POSPage = () => {
     const productItemsForAppt = invoiceItems.filter(i => i.itemType === 'product');
     const disposableItemsForAppt = invoiceItems.filter(i => i.itemType === 'disposable');
     if (serviceItemsForAppt.length > 0) {
-      const primaryStaff = serviceItemsForAppt[0]?.staff || 'Respark Trial';
+      const rawStaff = serviceItemsForAppt[0]?.staff?.trim();
+      const primaryStaff = (rawStaff && rawStaff !== 'Select Staff') ? rawStaff : 'Unassigned';
       const serviceTitle = serviceItemsForAppt.map(i => i.name).join(', ') || 'Salon Service';
       const servicePrice = serviceItemsForAppt.reduce((acc, i) => acc + (i.price * (i.qty || 1) - (parseFloat(i.discAmount) || 0)), 0);
+      const computedDurationMins = serviceItemsForAppt.reduce((acc, i) => acc + (parseInt(i.duration || i.durationMinutes) || 30), 0);
       const apptData = {
         guest: selectedGuest.name,
         mobile: selectedGuest.mobile || '+91 9876543210',
@@ -1678,12 +2163,14 @@ const POSPage = () => {
         paymentStatus: payStatus,
         staff: primaryStaff,
         timeSlot: selectedTimeSlot,
-        duration: '45 min',
+        duration: computedDurationMins > 0 ? `${computedDurationMins} min` : '30 min',
         status: 'Completed',
         date: formatDateDisplay(selectedDate),
         instruction: instruction || 'Billed & Completed in POS',
-        orderId: newInvoiceId,
-        invoiceId: newInvoiceId,
+        orderId: effectiveInvoiceId,
+        invoiceId: effectiveInvoiceId,
+        isPosOrder: true,
+        posOrderId: createdDbOrder?.id,
         items: [...invoiceItems],
         products: productItemsForAppt,
         services: serviceItemsForAppt,
@@ -1697,16 +2184,17 @@ const POSPage = () => {
       } else {
         saveAppointment({
           ...apptData,
-          id: Date.now(),
+          id: createdDbOrder?.id || Date.now(),
+          backendId: createdDbOrder?.id,
         });
       }
     }
 
     setShowInvoiceBillModal(true);
-    showToast('success', `Order #${newInvoiceId} created & completed for ${formatDateDisplay(selectedDate)} at ${selectedTimeSlot}! Synchronized to Appointments.`);
+    showToast('success', `Order #${effectiveInvoiceId} created & completed for ${formatDateDisplay(selectedDate)} at ${selectedTimeSlot}! Synchronized to Appointments.`);
   };
 
-  const actionButtonLabels = ['Services', 'Products', 'Disposables', 'Packages', 'Memberships'];
+  const actionButtonLabels = ['Services', 'Products', 'Disposables', 'Packages'];
 
   // Determine which items to display on left panel based on activeMode
   const getCurrentItems = () => {
@@ -1831,6 +2319,7 @@ const POSPage = () => {
         staff: (isProduct || isDisposable || isPackage || isMembership) ? '' : (item.staff || (masterStaff[0]?.name || 'Staff')),
         category: item.category || (isPackage ? (item.header || 'Special Packages') : (isMembership ? 'Annual Memberships' : item.category)),
         validityDays: item.validityDays || (isPackage ? 180 : (isMembership ? 365 : undefined)),
+        totalSessions: isPackage ? (Number(item.totalSessions) || 1) : undefined,
         ...(isDisposable ? {
           selectedUnit: defaultUnit,
           baseUnit: item.unit || 'Pack',
@@ -1870,8 +2359,10 @@ const POSPage = () => {
   };
 
   const updateStaff = (id, newStaff) => {
+    const matchedStaff = (masterStaff || []).find(st => (typeof st === 'object' ? st.name : st) === newStaff);
+    const resolvedStaffId = (matchedStaff && typeof matchedStaff === 'object' && matchedStaff.id) ? matchedStaff.id : undefined;
     setInvoiceItems(invoiceItems.map(item =>
-      item.id === id ? { ...item, staff: newStaff } : item
+      item.id === id ? { ...item, staff: newStaff, staffId: resolvedStaffId || item.staffId } : item
     ));
   };
 
@@ -1921,7 +2412,7 @@ const POSPage = () => {
   }, 0);
 
   const serviceInvoiceItems = useMemo(() => {
-    return invoiceItems.filter(i => (i.itemType === 'service' || (!i.itemType && i.category !== 'PACKAGE' && i.category !== 'MEMBERSHIP')) && i.itemType !== 'product' && i.itemType !== 'disposable' && i.itemType !== 'package' && i.itemType !== 'membership');
+    return invoiceItems.filter(i => (i.itemType === 'service' || (!i.itemType && i.category !== 'PACKAGE' && i.category !== 'MEMBERSHIP' && i.category !== 'PACKAGE_REDEMPTION')) && i.itemType !== 'product' && i.itemType !== 'disposable' && i.itemType !== 'package' && i.itemType !== 'membership' && i.itemType !== 'package_redemption');
   }, [invoiceItems]);
 
   const productInvoiceItems = useMemo(() => {
@@ -1933,11 +2424,15 @@ const POSPage = () => {
   }, [invoiceItems]);
 
   const packageInvoiceItems = useMemo(() => {
-    return invoiceItems.filter(i => i.itemType === 'package' || i.category === 'PACKAGE' || (i.header && String(i.header).toLowerCase().includes('package')));
+    return invoiceItems.filter(i => (i.itemType === 'package' || (i.category === 'PACKAGE' && i.itemType !== 'package_redemption') || (i.header && String(i.header).toLowerCase().includes('package') && i.itemType !== 'package_redemption')) && i.itemType !== 'package_redemption');
   }, [invoiceItems]);
 
   const membershipInvoiceItems = useMemo(() => {
     return invoiceItems.filter(i => i.itemType === 'membership' || i.category === 'MEMBERSHIP' || (i.header && String(i.header).toLowerCase().includes('membership')));
+  }, [invoiceItems]);
+
+  const packageRedemptionInvoiceItems = useMemo(() => {
+    return invoiceItems.filter(i => i.itemType === 'package_redemption');
   }, [invoiceItems]);
 
   const servicesSubTotal = useMemo(() => {
@@ -1979,6 +2474,16 @@ const POSPage = () => {
       return sum + Math.max(0, sub - disc);
     }, 0);
   }, [membershipInvoiceItems]);
+
+  useEffect(() => {
+    if (grandTotal === 0 && packageRedemptionInvoiceItems.length > 0) {
+      if (!selectedPaymentMethod || selectedPaymentMethod === '') {
+        setSelectedPaymentMethod('Package Redemption');
+      }
+    } else if (selectedPaymentMethod === 'Package Redemption' && grandTotal > 0) {
+      setSelectedPaymentMethod('Cash');
+    }
+  }, [grandTotal, packageRedemptionInvoiceItems.length, selectedPaymentMethod]);
 
   useEffect(() => {
     if (selectedPaymentMethod) {
@@ -2048,7 +2553,7 @@ const POSPage = () => {
         </div>
 
         {/* Categories */}
-        {activeMode === 'Services' && (
+        {activeMode === 'Services' && categories.length > 0 && (
           <div className="flex overflow-x-auto p-4 space-x-2 shrink-0 border-b border-slate-200 no-scrollbar">
             {categories.map(cat => (
               <button
@@ -2069,7 +2574,11 @@ const POSPage = () => {
         {/* Item List (Services, Products, Packages, Memberships) */}
         <div className="flex-1 overflow-y-auto p-4">
           {Object.keys(groupedItems).length === 0 ? (
-            <p className="text-slate-500 text-sm text-center mt-4">No {activeMode.toLowerCase()} items found</p>
+            <p className="text-slate-500 text-sm text-center mt-4">
+              {activeMode === 'Services' && categories.length === 0
+                ? 'No service categories or services created yet. Please create services in Master BackOffice.'
+                : `No ${activeMode.toLowerCase()} items found`}
+            </p>
           ) : (
             Object.entries(groupedItems).map(([header, items]) => (
               <div key={header} className="mb-6">
@@ -2081,7 +2590,12 @@ const POSPage = () => {
                       onClick={() => addToInvoice(item)}
                       className="flex justify-between items-center border border-slate-200 rounded-lg px-3 py-2 cursor-pointer hover:bg-indigo-50 hover:border-indigo-300 transition-all group"
                     >
-                      <span className="text-sm font-medium text-slate-700 truncate mr-2 group-hover:text-indigo-900">{item.name}</span>
+                      <div className="flex flex-col truncate mr-2">
+                        <span className="text-sm font-medium text-slate-700 truncate group-hover:text-indigo-900">{item.name}</span>
+                        {item.totalSessions && (
+                          <span className="text-[10px] text-emerald-600 font-bold">⚡ {item.totalSessions} Sessions</span>
+                        )}
+                      </div>
                       <span className="text-sm font-semibold text-slate-900 shrink-0 group-hover:text-indigo-600">₹{item.price}</span>
                     </div>
                   ))}
@@ -2095,15 +2609,64 @@ const POSPage = () => {
       {/* RIGHT PANEL */}
       <div className="w-full md:w-[60%] lg:w-[70%] bg-slate-50 flex flex-col h-screen">
         <div className="p-4 bg-white border-b border-slate-200 shrink-0">
-          <div className="flex flex-wrap justify-between items-center gap-2 mb-4">
-            <h1 className="text-xl font-bold text-slate-800">Invoice</h1>
+          <div className="flex flex-wrap justify-between items-center gap-2 mb-3">
+            <div className="flex items-center gap-2.5">
+              <h1 className="text-xl font-bold text-slate-800">Invoice</h1>
+              <span className="text-slate-300">|</span>
+              <span className="text-xs font-semibold text-slate-500">Service / Booking Timing:</span>
+            </div>
+
+            {/* ALWAYS-VISIBLE DATE & TIME SLOT PICKERS */}
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* DATE SELECTOR */}
+              <div
+                onClick={() => {
+                  try {
+                    dateInputRef.current?.showPicker();
+                  } catch (e) {
+                    dateInputRef.current?.focus();
+                  }
+                }}
+                className="relative flex items-center bg-white hover:bg-slate-50 text-slate-700 px-3 py-1.5 rounded-lg border border-slate-200 transition-all cursor-pointer group hover:border-indigo-400 shadow-2xs"
+                title="Click to select appointment / session date (today & future dates only)"
+              >
+                <Calendar size={14} className="mr-1.5 text-indigo-600 group-hover:scale-110 transition-transform" />
+                <span className="text-xs font-bold text-slate-800 tracking-tight select-none">
+                  {formatDateDisplay(selectedDate)}
+                </span>
+                <input
+                  ref={dateInputRef}
+                  type="date"
+                  min={getTodayIsoDate()}
+                  value={selectedDate}
+                  onChange={(e) => handleDateChange(e.target.value)}
+                  className="absolute inset-0 opacity-0 w-full h-full cursor-pointer z-10"
+                />
+              </div>
+
+              {/* TIME SLOT SELECTOR */}
+              <div className="flex items-center bg-white hover:bg-slate-50 text-slate-700 px-3 py-1.5 rounded-lg border border-slate-200 transition-colors shadow-2xs">
+                <Clock size={14} className="mr-1.5 text-indigo-600 shrink-0" />
+                <span className="text-xs font-semibold text-slate-500 mr-1.5">Slot:</span>
+                <select
+                  value={selectedTimeSlot}
+                  onChange={(e) => setSelectedTimeSlot(e.target.value)}
+                  className="bg-transparent text-xs font-bold text-slate-800 focus:outline-none cursor-pointer"
+                  title="Select appointment / service time slot"
+                >
+                  {availableTimeSlots.map(ts => (
+                    <option key={ts} value={ts}>{ts}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
           </div>
 
           <div className="flex flex-col md:flex-row md:items-center space-y-3 md:space-y-0 md:space-x-4">
             <span className="text-sm font-semibold text-slate-700">Customer:</span>
             
             {selectedGuest ? (
-              <div className="flex-1 bg-white border border-slate-200 rounded-lg p-3 text-xs shadow-xs">
+              <div className="flex-1 bg-white border border-slate-200 rounded-lg p-3 text-xs shadow-xs space-y-2">
                 <div className="flex flex-wrap items-center justify-between gap-y-2">
                   <div className="flex items-center gap-2">
                     <span className="font-bold text-slate-700">Customer :</span>
@@ -2115,7 +2678,6 @@ const POSPage = () => {
                     </span>
                   </div>
                   <div><span className="text-slate-400">Phone :</span> <span className="text-slate-800 font-mono font-bold">{selectedGuest.mobile}</span></div>
-                  <div><span className="text-slate-400">Loyalty :</span> <span className="bg-amber-50 text-amber-700 px-1.5 py-0.2 rounded font-semibold border border-amber-200 text-[10px]">{selectedGuest.loyalty || 'Silver'}</span></div>
                   <button 
                     onClick={() => setShowAddGuestModal(true)} 
                     className="text-indigo-600 hover:text-indigo-800 text-xs font-semibold flex items-center gap-1 cursor-pointer"
@@ -2124,6 +2686,52 @@ const POSPage = () => {
                     <Edit2 size={12} /> Edit
                   </button>
                 </div>
+
+                {/* Active Package Subscriptions & Session Counts Banner */}
+                {customerActivePackages && customerActivePackages.length > 0 && (
+                  <div className="pt-2 border-t border-slate-100 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-violet-800 flex items-center gap-1">
+                        <Gift size={13} className="text-violet-600" />
+                        Active Packages & Session Balance
+                      </span>
+                      <span className="text-[10px] text-slate-500 font-medium">Prepaid Services</span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {customerActivePackages.map(pkg => {
+                        const remSessions = pkg.remainingSessions !== undefined ? Number(pkg.remainingSessions) : Number(pkg.totalSessions || 1);
+                        const totSessions = Number(pkg.totalSessions || remSessions || 1);
+                        return (
+                          <div key={pkg.id} className="bg-violet-50/70 rounded-lg px-2.5 py-1.5 border border-violet-100 flex items-center justify-between gap-2 shadow-2xs">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-bold text-xs text-slate-900 truncate">{pkg.name}</span>
+                                <span className="text-[10px] font-bold px-2 py-0.2 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 shrink-0">
+                                  ⚡ {remSessions} / {totSessions} Sessions Remaining
+                                </span>
+                              </div>
+                              {pkg.services && (
+                                <p className="text-[10px] text-slate-500 truncate mt-0.5">
+                                  Included: {typeof pkg.services === 'string' ? pkg.services : (pkg.services?.text || 'Package Services')}
+                                </p>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRedeemPackageSession(pkg)}
+                              disabled={remSessions <= 0}
+                              className="px-2.5 py-1 bg-violet-600 hover:bg-violet-700 text-white rounded-md text-[11px] font-bold shadow-2xs cursor-pointer transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed shrink-0 flex items-center gap-1"
+                              title={`Redeem 1 session of ${pkg.name}`}
+                            >
+                              <Sparkles size={11} />
+                              Redeem 1 Session
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="relative flex-1 max-w-md">
@@ -2172,11 +2780,7 @@ const POSPage = () => {
                       .map(guest => (
                         <div
                           key={guest.id || guest.mobile || guest.name}
-                          onClick={() => {
-                            setSelectedGuest(guest);
-                            setShowGuestDropdown(false);
-                            setGuestSearch('');
-                          }}
+                          onClick={() => handleSelectCustomer(guest)}
                           className="p-2.5 hover:bg-indigo-50/80 cursor-pointer transition-colors flex items-center justify-between group"
                         >
                           <div className="min-w-0 pr-2">
@@ -2185,11 +2789,7 @@ const POSPage = () => {
                             </div>
                             <div className="text-[11px] text-slate-500 font-mono flex items-center gap-1.5 mt-0.5">
                               <span>{guest.mobile || 'No mobile'}</span>
-                              {guest.loyalty && (
-                                <span className="bg-amber-50 text-amber-700 text-[9px] px-1.5 py-0.2 rounded font-semibold border border-amber-200">
-                                  {guest.loyalty}
-                                </span>
-                              )}
+
                             </div>
                           </div>
                           <button
@@ -2675,9 +3275,8 @@ const POSPage = () => {
                       <th className="text-left py-2.5 px-4 font-semibold">Package Name</th>
                       <th className="text-left py-2.5 px-3 font-semibold">Package Category</th>
                       <th className="text-center py-2.5 px-3 font-semibold">Package Validity Days</th>
+                      <th className="text-center py-2.5 px-3 font-semibold">Sessions</th>
                       <th className="text-right py-2.5 px-3 font-semibold">Package Amount</th>
-                      <th className="text-center py-2.5 px-2 font-semibold">Disc%</th>
-                      <th className="text-right py-2.5 px-2 font-semibold">Disc (₹)</th>
                       <th className="text-right py-2.5 px-4 font-semibold">Total</th>
                       <th className="text-center py-2.5 px-3 font-semibold">Action</th>
                     </tr>
@@ -2703,39 +3302,16 @@ const POSPage = () => {
                             {item.validityDays ? `${item.validityDays} Days` : '180 Days'}
                           </span>
                         </td>
+                        <td className="py-3 px-3 text-center">
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            ⚡ {item.totalSessions || 1} Sessions
+                          </span>
+                        </td>
                         <td className="py-3 px-3 text-right font-mono text-slate-700 font-medium">
                           ₹{item.price * (item.qty || 1)}
                         </td>
-                        <td className="py-3 px-2 text-center">
-                          <div className="inline-flex items-center border border-slate-200 rounded px-1.5 py-0.5 focus-within:border-indigo-600 focus-within:ring-1 focus-within:ring-indigo-600 bg-white shadow-2xs">
-                            <input 
-                              type="number" 
-                              min="0"
-                              max="100"
-                              placeholder="0"
-                              value={item.discPercent !== undefined ? item.discPercent : ''} 
-                              onChange={(e) => updateDiscPercent(item.id, e.target.value)}
-                              className="w-8 text-center text-xs font-mono outline-none text-slate-800"
-                            />
-                            <span className="text-[11px] text-slate-400 ml-0.5">%</span>
-                          </div>
-                        </td>
-                        <td className="py-3 px-2 text-right">
-                          <div className="inline-flex items-center border border-slate-200 rounded px-1.5 py-0.5 focus-within:border-indigo-600 focus-within:ring-1 focus-within:ring-indigo-600 bg-white shadow-2xs">
-                            <span className="text-[11px] text-slate-400 mr-0.5">₹</span>
-                            <input 
-                              type="number" 
-                              min="0"
-                              max={item.price * (item.qty || 1)}
-                              placeholder="0"
-                              value={item.discAmount !== undefined ? item.discAmount : ''} 
-                              onChange={(e) => updateDiscAmount(item.id, e.target.value)}
-                              className="w-12 text-right text-xs font-mono outline-none text-slate-800"
-                            />
-                          </div>
-                        </td>
                         <td className="py-3 px-4 text-right font-mono font-bold text-slate-900">
-                          ₹{Math.max(0, (item.price * (item.qty || 1)) - (parseFloat(item.discAmount) || 0))}
+                          ₹{item.price * (item.qty || 1)}
                         </td>
                         <td className="py-3 px-3 text-center">
                           <button 
@@ -2864,9 +3440,133 @@ const POSPage = () => {
             </div>
           )}
 
+          {/* BOX 6: PACKAGE SESSION REDEMPTIONS */}
+          {packageRedemptionInvoiceItems.length > 0 && (
+            <div className="bg-white rounded-xl border border-teal-200 shadow-xs overflow-hidden shrink-0">
+              {/* Box Header */}
+              <div className="bg-gradient-to-r from-teal-50/80 via-emerald-50/40 to-slate-50 px-4 py-2.5 border-b border-teal-100 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-teal-600"></span>
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-teal-900 flex items-center gap-1.5">
+                    Package Session Redemption
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-teal-100 text-teal-800">
+                      {packageRedemptionInvoiceItems.length}
+                    </span>
+                  </h3>
+                  <span className="hidden sm:inline-block text-[11px] text-teal-700 italic font-medium ml-1">
+                    (Prepaid Package · 1 Session Deducted · ₹0 Billed)
+                  </span>
+                </div>
+                <div className="flex items-center gap-2.5">
+                  <div className="flex items-center gap-1.5 bg-white/90 border border-teal-200 rounded-lg px-2.5 py-1 text-xs font-bold text-teal-900 shadow-2xs">
+                    <Calendar size={13} className="text-teal-600" />
+                    <span>{formatDateDisplay(selectedDate)}</span>
+                    <span className="text-teal-300">|</span>
+                    <Clock size={13} className="text-teal-600" />
+                    <span>{selectedTimeSlot}</span>
+                  </div>
+                  <div className="text-xs font-semibold text-teal-950">
+                    <span className="text-slate-500 font-normal mr-1">Bill Amount:</span>
+                    <span className="font-mono font-bold text-teal-700 text-sm">₹0</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Redemptions Table */}
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px]">
+                  <thead className="bg-slate-50/80 text-slate-600 text-[11px] uppercase tracking-wider border-b border-slate-200">
+                    <tr>
+                      <th className="text-left py-2.5 px-4 font-semibold">Package & Service</th>
+                      <th className="text-left py-2.5 px-3 font-semibold">Performing Stylist</th>
+                      <th className="text-left py-2.5 px-3 font-semibold">Session Date & Time</th>
+                      <th className="text-center py-2.5 px-3 font-semibold">Session Deducted</th>
+                      <th className="text-center py-2.5 px-3 font-semibold">Remaining Balance</th>
+                      <th className="text-right py-2.5 px-4 font-semibold">Price</th>
+                      <th className="text-center py-2.5 px-3 font-semibold">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {packageRedemptionInvoiceItems.map(item => (
+                      <tr key={item.id} className="text-xs hover:bg-slate-50/80 transition-colors">
+                        <td className="py-3 px-4 font-medium text-slate-800">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-bold text-slate-900">{item.name}</span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-50 text-teal-700 border border-teal-200 font-bold">
+                              Session Redemption
+                            </span>
+                          </div>
+                          {item.serviceName && (
+                            <p className="text-[11px] text-slate-500 mt-0.5">Service: {item.serviceName}</p>
+                          )}
+                        </td>
+                        <td className="py-3 px-3">
+                          <select
+                            value={item.staff || ''}
+                            onChange={(e) => updateStaff(item.id, e.target.value)}
+                            className="border border-slate-200 rounded px-2 py-1 text-xs bg-white text-slate-800 focus:outline-none focus:border-teal-600 cursor-pointer"
+                          >
+                            <option value="">Select Stylist</option>
+                            {masterStaff?.filter(st => st.active !== false || (typeof st === 'object' ? st.name : st) === item.staff).map(st => {
+                              const name = typeof st === 'string' ? st : (st.name || `${st.firstName || ''} ${st.lastName || ''}`.trim() || 'Staff');
+                              const idKey = typeof st === 'object' ? (st.id || name) : name;
+                              return <option key={idKey} value={name}>{name}</option>;
+                            })}
+                          </select>
+                        </td>
+                        <td className="py-3 px-3">
+                          <div className="flex flex-col text-xs font-semibold text-slate-800">
+                            <span className="flex items-center gap-1 text-slate-900 font-bold">
+                              <Calendar size={12} className="text-teal-600" />
+                              {formatDateDisplay(selectedDate)}
+                            </span>
+                            <span className="flex items-center gap-1 text-[11px] text-slate-500 mt-0.5">
+                              <Clock size={11} className="text-teal-600" />
+                              {selectedTimeSlot}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                            -1 Session
+                          </span>
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            {item.remainingAfter} Left (of {item.totalSessions})
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono font-bold text-emerald-600">
+                          ₹0
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <button
+                            type="button"
+                            onClick={() => removeFromInvoice(item.id)}
+                            className="text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg p-1.5 transition-colors cursor-pointer inline-flex items-center justify-center"
+                            title="Remove redemption"
+                          >
+                            <X size={16} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {/* Grand Total & Subtotal Breakdown Row */}
           <div className="flex flex-col sm:flex-row items-end sm:items-center justify-between bg-white border border-slate-200 rounded-xl px-4 py-3 shadow-2xs gap-3 shrink-0">
             <div className="flex flex-wrap items-center gap-4 text-xs font-medium text-slate-600">
+              {packageRedemptionInvoiceItems.length > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-teal-500"></span>
+                  <span>Redemptions:</span>
+                  <span className="font-bold text-teal-700">{packageRedemptionInvoiceItems.length} Sessions (₹0)</span>
+                </div>
+              )}
               {serviceInvoiceItems.length > 0 && (
                 <div className="flex items-center gap-1.5">
                   <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
@@ -2965,7 +3665,7 @@ const POSPage = () => {
                   Payment Method*
                 </label>
                 <select
-                  value={selectedPaymentMethod || ''}
+                  value={selectedPaymentMethod || (grandTotal === 0 && packageRedemptionInvoiceItems.length > 0 ? 'Package Redemption' : '')}
                   onChange={(e) => {
                     const m = e.target.value;
                     handleSelectPaymentMethod(m);
@@ -2973,12 +3673,14 @@ const POSPage = () => {
                   className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-bold bg-white focus:outline-none focus:border-indigo-600 cursor-pointer"
                 >
                   <option value="">-- Select Payment Method --</option>
+                  {grandTotal === 0 && packageRedemptionInvoiceItems.length > 0 && (
+                    <option value="Package Redemption">Package Redemption (Prepaid Plan · ₹0 Billed)</option>
+                  )}
                   <option value="Cash">Cash (Immediate / Cash Counter)</option>
                   <option value="GPay">GPay / UPI (Instant Payment)</option>
                   <option value="Phone Pay">PhonePe (Instant Payment)</option>
                   <option value="Card">Credit / Debit Card</option>
                   <option value="HDFC">HDFC Bank Transfer</option>
-                  <option value="Balance">Customer Wallet Balance</option>
                   <option value="Pay at Salon">Pay at Salon (Due on Visit / Unpaid)</option>
                 </select>
               </div>
@@ -2991,7 +3693,7 @@ const POSPage = () => {
                 <div className="pt-0.5">
                   <span
                     className={`inline-flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold border ${
-                      !selectedPaymentMethod
+                      !selectedPaymentMethod && !(grandTotal === 0 && packageRedemptionInvoiceItems.length > 0)
                         ? 'bg-amber-50 text-amber-800 border-amber-300'
                         : selectedPaymentMethod === 'Pay at Salon'
                           ? 'bg-amber-50 text-amber-700 border-amber-200'
@@ -2999,11 +3701,13 @@ const POSPage = () => {
                     }`}
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-current" />
-                    {!selectedPaymentMethod
+                    {!selectedPaymentMethod && !(grandTotal === 0 && packageRedemptionInvoiceItems.length > 0)
                       ? 'Select Payment Method'
-                      : selectedPaymentMethod === 'Pay at Salon'
-                        ? 'Due on Visit (Unpaid)'
-                        : `Paid (₹${grandTotal}) via ${selectedPaymentMethod}`}
+                      : (selectedPaymentMethod === 'Package Redemption' || (grandTotal === 0 && packageRedemptionInvoiceItems.length > 0))
+                        ? 'Paid (Prepaid Package · ₹0 Billed)'
+                        : selectedPaymentMethod === 'Pay at Salon'
+                          ? 'Due on Visit (Unpaid)'
+                          : `Paid (₹${grandTotal}) via ${selectedPaymentMethod}`}
                   </span>
                 </div>
               </div>
@@ -3012,6 +3716,20 @@ const POSPage = () => {
             {/* Quick-select payment method pill icons */}
             <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-200/60">
               <span className="text-[10px] text-slate-400 font-bold uppercase mr-1">Quick Select:</span>
+              {grandTotal === 0 && packageRedemptionInvoiceItems.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => handleSelectPaymentMethod('Package Redemption')}
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    (selectedPaymentMethod === 'Package Redemption' || !selectedPaymentMethod)
+                      ? 'bg-teal-600 text-white shadow-xs'
+                      : 'bg-teal-50 border border-teal-200 text-teal-800 hover:bg-teal-100'
+                  }`}
+                >
+                  <Gift size={13} />
+                  <span>Package Redemption (₹0)</span>
+                </button>
+              )}
               {[
                 { name: 'Cash', icon: Banknote },
                 { name: 'Card', icon: CreditCard },
@@ -3050,10 +3768,10 @@ const POSPage = () => {
               </button>
               <button 
                 onClick={handleCreate}
-                disabled={!selectedPaymentMethod}
-                title={!selectedPaymentMethod ? "Please select a payment method before booking" : ""}
+                disabled={!(selectedPaymentMethod || (grandTotal === 0 && packageRedemptionInvoiceItems.length > 0))}
+                title={!(selectedPaymentMethod || (grandTotal === 0 && packageRedemptionInvoiceItems.length > 0)) ? "Please select a payment method before booking" : ""}
                 className={`flex-1 sm:flex-none px-7 py-2.5 rounded-lg font-bold transition-all text-sm ${
-                  selectedPaymentMethod
+                  (selectedPaymentMethod || (grandTotal === 0 && packageRedemptionInvoiceItems.length > 0))
                     ? 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm cursor-pointer active:scale-95'
                     : 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none'
                 }`}

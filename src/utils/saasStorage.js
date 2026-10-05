@@ -31,9 +31,10 @@ export const toISODateString = (dateStr) => {
 };
 
 export const isTenantPlanExpired = (tenant) => {
-  if (!tenant || !tenant.nextBillingDate) return false;
+  const expStr = tenant?.endDate || tenant?.nextBillingDate || tenant?.subscriptionExpiresAt;
+  if (!expStr) return false;
   try {
-    const expiryIso = toISODateString(tenant.nextBillingDate);
+    const expiryIso = toISODateString(expStr);
     const todayIso = new Date().toISOString().split('T')[0];
     return expiryIso <= todayIso;
   } catch (e) {
@@ -87,117 +88,16 @@ export const calculateDaysBetween = (startIso, endIso) => {
   return `${diffDays} days`;
 };
 
-export const initialSubscriptionPlans = [
-  {
-    id: 'plan_starter',
-    name: 'Starter Plan (30 Days)',
-    price: 1999,
-    durationDays: 30,
-    billingCycle: '30 Days',
-    maxCashiers: 1,
-    features: ['Quick Sale POS', 'Appointment Booking & Calendar Grid', 'Reports & Business Analytics', 'Cash Management & Counter Float', '1 Cashier Terminal'],
-    badgeColor: 'bg-slate-100 text-slate-700 border-slate-300'
-  },
-  {
-    id: 'plan_growth',
-    name: 'Growth Plan (90 Days)',
-    price: 4999,
-    durationDays: 90,
-    billingCycle: '90 Days',
-    maxCashiers: 2,
-    features: ['Quick Sale POS', 'Appointment Booking & Calendar Grid', 'CRM & Client Management', 'Salon Inventory & POs', 'Expenses Management', 'WhatsApp Invoicing & Alerts', '2 Cashier Terminals'],
-    badgeColor: 'bg-pink-50 text-pink-700 border-pink-300'
-  },
-  {
-    id: 'plan_enterprise',
-    name: 'Annual Enterprise (365 Days)',
-    price: 9999,
-    durationDays: 365,
-    billingCycle: '365 Days',
-    maxCashiers: 5,
-    features: ['Quick Sale POS', 'Appointment Booking & Calendar Grid', 'CRM & Client Management', 'Master BackOffice Catalog', 'Salon Inventory & POs', 'Expenses Management', 'Staff Payroll & Commissions', 'Reports & Business Analytics', 'Cash Management & Counter Float', 'WhatsApp Invoicing & Alerts', 'Revenue Trends & Insights', '5 Cashier Terminals'],
-    badgeColor: 'bg-rose-50 text-rose-700 border-rose-300'
-  }
-];
+export const initialSubscriptionPlans = [];
 
-export const initialTenants = [
-  {
-    id: 'tenant_glamour',
-    companyName: 'Glamour Salons & Spa',
-    brandName: 'GLAMOUR',
-    logoTextPrefix: 'GLA',
-    logoTextSuffix: 'MOUR',
-    ownerName: 'Vikram Singhania',
-    email: 'admin@glamoursalon.com',
-    mobile: '9820123456',
-    adminUsername: 'admin',
-    adminPassword: 'admin123',
-    planId: 'plan_enterprise',
-    planName: 'Enterprise Plan',
-    maxCashiers: 2,
-    status: 'Active', // 'Active' | 'Suspended'
-    createdDate: '10-Jan-2026',
-    nextBillingDate: '10-Oct-2026',
-    mrr: 9999,
-    branches: [
-      { id: 'b_glamour_1', name: 'Trial 1, Kalyaninagar', city: 'Pune', isPrimary: true, phone: '020-26654321', active: true },
-      { id: 'b_glamour_2', name: 'Branch 2, Koregaon Park', city: 'Pune', isPrimary: false, phone: '020-26658888', active: true },
-      { id: 'b_glamour_3', name: 'Branch 3, Baner High St', city: 'Pune', isPrimary: false, phone: '020-27751234', active: true }
-    ]
-  },
-  {
-    id: 'tenant_naturals',
-    companyName: 'Naturals Luxury Salon',
-    brandName: 'NATURALS',
-    logoTextPrefix: 'NATU',
-    logoTextSuffix: 'RALS',
-    ownerName: 'Pooja Hegde',
-    email: 'contact@naturalssalon.in',
-    mobile: '9845012345',
-    adminUsername: 'naturals_admin',
-    adminPassword: 'admin123',
-    planId: 'plan_growth',
-    planName: 'Growth Plan',
-    maxCashiers: 2,
-    status: 'Active',
-    createdDate: '18-Feb-2026',
-    nextBillingDate: '18-Oct-2026',
-    mrr: 4999,
-    branches: [
-      { id: 'b_naturals_1', name: 'Viman Nagar Central', city: 'Pune', isPrimary: true, phone: '020-41235678', active: true },
-      { id: 'b_naturals_2', name: 'FC Road Flagship', city: 'Pune', isPrimary: false, phone: '020-41239999', active: true }
-    ]
-  },
-  {
-    id: 'tenant_enrich',
-    companyName: 'Enrich Hair Studio',
-    brandName: 'ENRICH',
-    logoTextPrefix: 'EN',
-    logoTextSuffix: 'RICH',
-    ownerName: 'Rahul Verma',
-    email: 'rahul@enrichstudio.com',
-    mobile: '9890123456',
-    adminUsername: 'enrich_admin',
-    adminPassword: 'admin123',
-    planId: 'plan_starter',
-    planName: 'Starter Plan',
-    maxCashiers: 1,
-    status: 'Active',
-    createdDate: '01-Mar-2026',
-    nextBillingDate: '01-Oct-2026',
-    mrr: 1999,
-    branches: [
-      { id: 'b_enrich_1', name: 'Aundh West Outlet', city: 'Pune', isPrimary: true, phone: '020-25881234', active: true }
-    ]
-  }
-];
+export const initialTenants = [];
 
 export const superAdminUser = {
   id: 'usr_superadmin',
   username: 'superadmin',
   name: 'Platform Super Admin',
   role: 'SUPER_ADMIN',
-  email: 'superadmin@respark.in',
+  email: 'saloonqubexe@gmail.com',
   avatar: '👑'
 };
 
@@ -324,124 +224,37 @@ export const generateDefaultTenantHistory = (t) => {
 };
 
 // ==========================================
-// TENANTS GET & SAVE
+// TENANTS GET & SAVE (PURE IN-MEMORY & DATABASE)
 // ==========================================
-export const getTenants = () => {
+let inMemoryTenants = (() => {
   try {
-    const data = localStorage.getItem(SAAS_STORAGE_KEY);
-    let parsedTenants = initialTenants;
-    if (data) {
-      const parsed = JSON.parse(data);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        parsedTenants = parsed;
-      }
-    }
-
-    const todayIso = new Date().toISOString().split('T')[0];
-    let modified = false;
-
-    // Auto-check plan expiry: if plan reached expiry date, automatically change status from 'Active' to 'Inactive'
-    const enriched = parsedTenants.map(t => {
-      let updatedTenant = { ...t };
-      if (t.nextBillingDate) {
-        const expiryIso = toISODateString(t.nextBillingDate);
-        if (expiryIso <= todayIso) {
-          if (updatedTenant.status === 'Active') {
-            updatedTenant.status = 'Inactive';
-            modified = true;
-          }
-        }
-      }
-
-      // Ensure adminUsername is strictly kept in sync with the registered Admin Email
-      if (t.email && updatedTenant.adminUsername !== t.email) {
-        updatedTenant.adminUsername = t.email;
-        modified = true;
-      }
-
-      // Ensure maxCashiers quota is defined
-      if (updatedTenant.maxCashiers === undefined) {
-        updatedTenant.maxCashiers = updatedTenant.planId === 'plan_enterprise' ? 5 : updatedTenant.planId === 'plan_growth' ? 2 : 1;
-        modified = true;
-      }
-
-      // Ensure every tenant has a valid history array
-      if (!Array.isArray(updatedTenant.history) || updatedTenant.history.length === 0) {
-        modified = true;
-        const initHist = generateDefaultTenantHistory(updatedTenant);
-        updatedTenant.history = initHist;
-      }
-
-      // Ensure tenant city is normalized and synchronised with primary branch
-      const primaryBranchCity = updatedTenant.branches?.[0]?.city;
-      if (!updatedTenant.city && primaryBranchCity) {
-        updatedTenant.city = primaryBranchCity;
-        modified = true;
-      } else if (updatedTenant.city && updatedTenant.branches?.[0] && (!updatedTenant.branches[0].city || (updatedTenant.branches[0].city === 'Pune' && updatedTenant.city !== 'Pune'))) {
-        updatedTenant.branches[0].city = updatedTenant.city;
-        modified = true;
-      }
-
-      // Filter out removed POS Dashboard from customFeatures if present
-      if (Array.isArray(updatedTenant.customFeatures)) {
-        const filteredFeatures = updatedTenant.customFeatures.filter(f => {
-          const str = String(f).toLowerCase();
-          return !str.includes('order dashboard') && !str.includes('pos dashboard');
-        });
-        if (filteredFeatures.length !== updatedTenant.customFeatures.length) {
-          updatedTenant.customFeatures = filteredFeatures;
-          modified = true;
-        }
-      }
-
-      // Auto-reconcile custom subscription plan (e.g. paradise with bumper plan)
-      const allPlans = getSubscriptionPlans();
-      const bumperPlan = allPlans.find(p => p.name && p.name.toLowerCase().includes('bumper'));
-      if (bumperPlan && updatedTenant.companyName?.toLowerCase().includes('paradise')) {
-        if (updatedTenant.planName?.toLowerCase().includes('growth') || !updatedTenant.mrr) {
-          updatedTenant.planId = bumperPlan.id;
-          updatedTenant.planName = bumperPlan.name;
-          updatedTenant.mrr = bumperPlan.price;
-          modified = true;
-        }
-        if (Array.isArray(updatedTenant.history)) {
-          updatedTenant.history = updatedTenant.history.map(h => {
-            if (h.type === 'INITIAL_SIGNUP' && (!h.amountPaid || h.amountPaid === 0)) {
-              modified = true;
-              return {
-                ...h,
-                title: `Account Onboarded (${bumperPlan.name})`,
-                planId: bumperPlan.id,
-                planName: bumperPlan.name,
-                amountPaid: bumperPlan.price || 1500,
-                paymentMode: h.paymentMode && h.paymentMode !== 'Account Setup' ? h.paymentMode : 'UPI / GPay / PhonePe'
-              };
-            }
-            return h;
-          });
-        }
-      }
-
-      return updatedTenant;
-    });
-
-    if (modified || !data) {
-      localStorage.setItem(SAAS_STORAGE_KEY, JSON.stringify(enriched));
-    }
-    return enriched;
-  } catch (err) {
-    console.error('Failed to load tenants', err);
-    return initialTenants;
+    const raw = sessionStorage.getItem('respark_cached_tenants');
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    return [];
   }
+})();
+
+export const purgeLocalTenants = () => {
+  try {
+    localStorage.removeItem(SAAS_STORAGE_KEY);
+  } catch (e) {}
+};
+
+purgeLocalTenants();
+
+export const getTenants = () => {
+  return [...inMemoryTenants];
 };
 
 export const saveTenants = (tenants) => {
+  inMemoryTenants = Array.isArray(tenants) ? tenants : [];
   try {
-    localStorage.setItem(SAAS_STORAGE_KEY, JSON.stringify(tenants));
-    window.dispatchEvent(new Event('saasUpdated'));
-  } catch (err) {
-    console.error('Failed to save tenants', err);
-  }
+    if (inMemoryTenants.length > 0) {
+      sessionStorage.setItem('respark_cached_tenants', JSON.stringify(inMemoryTenants));
+    }
+  } catch (e) {}
+  window.dispatchEvent(new Event('saasUpdated'));
 };
 
 // ==========================================
@@ -450,22 +263,29 @@ export const saveTenants = (tenants) => {
 export const getCurrentUser = () => {
   try {
     const data = localStorage.getItem(SAAS_USER_KEY);
+    const activeTenant = getActiveTenant();
     if (!data) {
-      // Default to Glamour Company Admin for seamless fallback
       const defaultUser = {
-        id: 'usr_glamour_admin',
+        id: 'usr_admin',
         username: 'admin',
-        name: 'Glamour Salon Admin',
+        name: `${activeTenant?.companyName || activeTenant?.name || 'Company'} Admin`,
         role: 'COMPANY_ADMIN',
-        companyId: 'tenant_glamour',
-        companyName: 'Glamour Salons & Spa',
-        branchId: 'b_glamour_1',
-        branchName: 'Trial 1, Kalyaninagar'
+        companyId: activeTenant?.id || '3846baad-5322-49af-b92f-22644ec559a9',
+        companyName: activeTenant?.companyName || activeTenant?.name || 'Salon ERP',
+        branchId: activeTenant?.branches?.[0]?.id || 'b_1',
+        branchName: activeTenant?.branches?.[0]?.name || 'Main Counter / Branch'
       };
       localStorage.setItem(SAAS_USER_KEY, JSON.stringify(defaultUser));
       return defaultUser;
     }
     const parsed = JSON.parse(data);
+
+    if (parsed && (parsed.companyId === 'tenant_glamour' || parsed.companyId === 'tenant_naturals' || parsed.companyId === 'tenant_enrich')) {
+      parsed.companyId = activeTenant?.id || '3846baad-5322-49af-b92f-22644ec559a9';
+      parsed.companyName = activeTenant?.companyName || activeTenant?.name || 'Salon ERP';
+      parsed.name = `${activeTenant?.companyName || activeTenant?.name || 'Company'} Admin`;
+      localStorage.setItem(SAAS_USER_KEY, JSON.stringify(parsed));
+    }
 
     // If current session is a CASHIER and is missing their dedicated email, auto-resolve it from cashier storage
     if (parsed && parsed.role === 'CASHIER' && !parsed.email) {
@@ -590,30 +410,81 @@ export const setCurrentUser = (user) => {
   }
 };
 
+const DB_DEFAULT_TENANT = {
+  id: '3846baad-5322-49af-b92f-22644ec559a9',
+  companyName: 'prakash',
+  brandName: 'prakash',
+  branches: [{ id: 'b_1', name: 'knr', city: 'vmd', isPrimary: true }]
+};
+
+export const syncActiveTenantBranding = async (tenantId) => {
+  try {
+    const id = tenantId || getActiveTenantId();
+    if (!id || id === 'tenant_glamour' || id === 'tenant_naturals' || id === 'tenant_enrich') return null;
+    const res = await fetch(`/api/auth/tenant/${id}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.success && data.data) {
+        const t = data.data;
+        const current = getActiveTenant() || {};
+        const updated = {
+          ...current,
+          id: t.id,
+          companyName: t.name || current.companyName,
+          brandName: t.code?.toUpperCase() || t.name?.toUpperCase() || current.brandName,
+          logoUrl: t.logoUrl || current.logoUrl || null,
+          city: t.city || current.city,
+          primaryBranchName: t.primaryBranchName || current.primaryBranchName,
+          branches: current.branches && current.branches.length > 0 && current.branches[0].name !== 'Main Counter / Branch'
+            ? current.branches
+            : [{ id: 'b_1', name: t.primaryBranchName || 'Main Counter / Branch', city: t.city, isPrimary: true }]
+        };
+        localStorage.setItem(SAAS_ACTIVE_TENANT_KEY, JSON.stringify(updated));
+        window.dispatchEvent(new Event('tenantChanged'));
+        window.dispatchEvent(new Event('saasUpdated'));
+        return updated;
+      }
+    }
+  } catch (err) {
+    console.error('Failed to sync tenant branding', err);
+  }
+  return null;
+};
+
 export const getActiveTenant = () => {
   try {
     const data = localStorage.getItem(SAAS_ACTIVE_TENANT_KEY);
     const tenants = getTenants();
     if (!data) {
-      const defaultTenant = tenants[0] || initialTenants[0];
-      localStorage.setItem(SAAS_ACTIVE_TENANT_KEY, JSON.stringify(defaultTenant));
+      const defaultTenant = tenants[0] || DB_DEFAULT_TENANT;
+      if (defaultTenant) {
+        localStorage.setItem(SAAS_ACTIVE_TENANT_KEY, JSON.stringify(defaultTenant));
+      }
       return defaultTenant;
     }
     const parsed = JSON.parse(data);
+    // Purge legacy mock tenant if found in active tenant slot
+    if (parsed && (parsed.id === 'tenant_glamour' || parsed.id === 'tenant_naturals' || parsed.id === 'tenant_enrich')) {
+      const realMatch = tenants.find(t => t.id === parsed.id);
+      if (!realMatch) {
+        localStorage.setItem(SAAS_ACTIVE_TENANT_KEY, JSON.stringify(tenants[0] || DB_DEFAULT_TENANT));
+        return tenants[0] || DB_DEFAULT_TENANT;
+      }
+    }
     // Find latest version of this tenant in storage
     const match = tenants.find(t => t.id === parsed.id);
-    return match || parsed;
+    return match || parsed || DB_DEFAULT_TENANT;
   } catch (err) {
-    return initialTenants[0];
+    return DB_DEFAULT_TENANT;
   }
 };
 
 export const getActiveTenantId = () => {
   try {
     const tenant = getActiveTenant();
-    return tenant?.id || 'tenant_glamour';
+    return tenant?.id || '3846baad-5322-49af-b92f-22644ec559a9';
   } catch (err) {
-    return 'tenant_glamour';
+    return '3846baad-5322-49af-b92f-22644ec559a9';
   }
 };
 
@@ -680,15 +551,14 @@ export const setActiveBranch = (branch) => {
 // ==========================================
 export const createTenant = (formData) => {
   const tenants = getTenants();
-  const tenantId = 'tenant_' + Date.now();
+  const tenantId = formData.id || ('tenant_' + Date.now());
   const branchId = 'b_' + Date.now();
 
   const allPlans = getSubscriptionPlans();
   const plan = allPlans.find(p => p.id === formData.planId) 
     || allPlans.find(p => p.name?.toLowerCase() === formData.planName?.toLowerCase())
-    || allPlans.find(p => p.id === 'plan_growth')
     || allPlans[0]
-    || initialSubscriptionPlans[1];
+    || { id: 'standard_plan', name: formData.planName || 'Standard Plan', maxCashiers: 2, price: 0 };
 
   const brandClean = (formData.brandName || formData.companyName || 'SALON').toUpperCase();
   const halfLen = Math.ceil(brandClean.length / 2);
@@ -813,6 +683,10 @@ export const toggleTenantStatus = (id) => {
   let newStatus = 'Active';
   const updated = tenants.map(t => {
     if (t.id === id) {
+      if (t.status === 'Suspended' || t.isSuspended) {
+        newStatus = isTenantPlanExpired(t) ? 'Inactive' : 'Active';
+        return { ...t, status: newStatus, isSuspended: false };
+      }
       const isExpired = isTenantPlanExpired(t);
       if (isExpired) {
         // If expired, status remains Inactive
@@ -857,51 +731,36 @@ export const createTenantBranch = (tenantId, branchData) => {
 };
 
 const SAAS_PLANS_STORAGE_KEY = 'respark_saas_plans';
+let inMemoryPlans = (() => {
+  try {
+    const raw = sessionStorage.getItem('respark_cached_plans');
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    return [];
+  }
+})();
+
+export const purgeLocalPlans = () => {
+  try {
+    localStorage.removeItem(SAAS_PLANS_STORAGE_KEY);
+  } catch (e) {}
+};
+
+purgeLocalPlans();
 
 export const getSubscriptionPlans = () => {
-  try {
-    const data = localStorage.getItem(SAAS_PLANS_STORAGE_KEY);
-    if (!data) {
-      localStorage.setItem(SAAS_PLANS_STORAGE_KEY, JSON.stringify(initialSubscriptionPlans));
-      return initialSubscriptionPlans;
-    }
-    const parsed = JSON.parse(data);
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      return initialSubscriptionPlans;
-    }
-    // Normalize plans to ensure durationDays exists and remove unlimited staff and pos dashboard
-    const normalized = parsed.map(p => {
-      let days = p.durationDays;
-      if (!days) {
-        if (p.billingCycle === 'Quarterly' || (p.name && p.name.includes('Growth'))) days = 90;
-        else if (p.billingCycle === 'Yearly' || (p.name && p.name.includes('Enterprise'))) days = 365;
-        else days = 30;
-      }
-      return {
-        ...p,
-        durationDays: parseInt(days) || 30,
-        features: Array.isArray(p.features)
-          ? p.features.filter(f => {
-              const str = String(f).toLowerCase();
-              return !str.includes('unlimited staff') && !str.includes('order dashboard') && !str.includes('pos dashboard');
-            })
-          : []
-      };
-    });
-    return normalized;
-  } catch (err) {
-    return initialSubscriptionPlans;
-  }
+  return [...inMemoryPlans];
 };
 
 export const saveSubscriptionPlans = (plans) => {
+  inMemoryPlans = Array.isArray(plans) ? plans : [];
   try {
-    localStorage.setItem(SAAS_PLANS_STORAGE_KEY, JSON.stringify(plans));
-    window.dispatchEvent(new Event('saasPlansUpdated'));
-    window.dispatchEvent(new Event('saasUpdated'));
-  } catch (err) {
-    console.error(err);
-  }
+    if (inMemoryPlans.length > 0) {
+      sessionStorage.setItem('respark_cached_plans', JSON.stringify(inMemoryPlans));
+    }
+  } catch (e) {}
+  window.dispatchEvent(new Event('saasPlansUpdated'));
+  window.dispatchEvent(new Event('saasUpdated'));
 };
 
 export const createSubscriptionPlan = (planData) => {
@@ -909,7 +768,7 @@ export const createSubscriptionPlan = (planData) => {
     const plans = getSubscriptionPlans();
     const durationDays = parseInt(planData.durationDays) || 30;
     const newPlan = {
-      id: 'plan_' + Date.now(),
+      id: planData.id || ('plan_' + Date.now()),
       name: planData.name.trim(),
       price: parseFloat(planData.price) || 0,
       durationDays: durationDays,
@@ -1006,6 +865,7 @@ export const isPlanFeatureAllowed = (tenant, moduleKey) => {
 
   switch (moduleKey) {
     case 'pos':
+    case 'posDashboard':
       return features.some(f => 
         f.includes('pos') || 
         f.includes('quick sale') || 

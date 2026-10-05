@@ -1,32 +1,29 @@
 import React, { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import {
   Users, Plus, Search, Check, X, Shield, Clock, Building,
   Edit2, CheckCircle2, ChevronDown, Calendar, FileText, User,
   Phone, Mail, Eye, Trash2, UserCheck, Briefcase, Filter,
-  DollarSign, Download, Printer, AlertCircle, FileSpreadsheet,
-  ArrowRight, Landmark, BadgeCheck, Send
+  AlertCircle, Loader2
 } from 'lucide-react';
-import { getMasterStaff, saveMasterStaff } from '../utils/staffStorage';
-import { getActiveTenant } from '../utils/saasStorage';
+import {
+  getMasterStaff,
+  saveMasterStaff,
+  addStaffMember,
+  updateStaffMember,
+  deleteStaffMember,
+  toggleStaffStatusInBackend,
+  syncStaffFromBackend,
+  getStoredStaffExperience,
+} from '../utils/staffStorage';
 
 export default function StaffManagementPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const tabParam = searchParams.get('tab');
-  const [activeTab, setActiveTab] = useState(
-    tabParam === 'salary' ? 'salary' : tabParam === 'payslips' ? 'payslips' : 'staff'
-  );
-
-  const handleTabChange = (tabKey) => {
-    setActiveTab(tabKey);
-    setSearchParams(tabKey === 'staff' ? {} : { tab: tabKey });
-  };
-
   const [staffList, setStaffList] = useState(() => getMasterStaff());
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
   const [notification, setNotification] = useState('');
+  const [isLoadingStaff, setIsLoadingStaff] = useState(false);
+  const [isSavingStaff, setIsSavingStaff] = useState(false);
 
   // Selected & Modal States
   const [selectedStaffId, setSelectedStaffId] = useState(null);
@@ -40,24 +37,6 @@ export default function StaffManagementPage() {
   const [showAddDocModal, setShowAddDocModal] = useState(false);
   const [newExp, setNewExp] = useState({ company: '', role: '', duration: '' });
   const [newDoc, setNewDoc] = useState({ type: 'Aadhar Card', number: '' });
-
-  // Payroll States
-  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-  const years = ['2025', '2026', '2027'];
-  const [selectedMonth, setSelectedMonth] = useState('August');
-  const [selectedYear, setSelectedYear] = useState('2026');
-  const [payslipStaffId, setPayslipStaffId] = useState(() => (staffList[0]?.id || null));
-  const [showSlip, setShowSlip] = useState(true);
-  const [whatsAppNotice, setWhatsAppNotice] = useState(false);
-
-  // Dynamic salary status map: { [staffId]: 'Processed' | 'Pending' }
-  const [salaryStatuses, setSalaryStatuses] = useState({
-    1: 'Processed',
-    2: 'Processed',
-    3: 'Processed',
-    4: 'Pending',
-    5: 'Pending',
-  });
 
   const emptyStaffForm = {
     id: null,
@@ -93,21 +72,33 @@ export default function StaffManagementPage() {
   const [staffFormData, setStaffFormData] = useState(emptyStaffForm);
 
   useEffect(() => {
+    // 1. Initial backend sync from PostgreSQL
+    setIsLoadingStaff(true);
+    syncStaffFromBackend()
+      .then((liveList) => {
+        if (Array.isArray(liveList)) {
+          setStaffList(liveList);
+        }
+      })
+      .finally(() => {
+        setIsLoadingStaff(false);
+      });
+
     const handleSync = () => {
       const list = getMasterStaff();
       setStaffList(list);
-      if (list.length > 0 && !payslipStaffId) {
-        setPayslipStaffId(list[0].id);
-      }
     };
 
     window.addEventListener('staffUpdated', handleSync);
-    window.addEventListener('tenantChanged', handleSync);
+    window.addEventListener('tenantChanged', () => {
+      handleSync();
+      syncStaffFromBackend();
+    });
     return () => {
       window.removeEventListener('staffUpdated', handleSync);
       window.removeEventListener('tenantChanged', handleSync);
     };
-  }, [payslipStaffId]);
+  }, []);
 
   const showToast = (msg) => {
     setNotification(msg);
@@ -117,6 +108,20 @@ export default function StaffManagementPage() {
   const handleSelectStaff = (staffMember) => {
     setSelectedStaffId(staffMember.id);
     const nameParts = (staffMember.name || '').trim().split(' ');
+    const exp = (staffMember.workExperience && staffMember.workExperience.length > 0)
+      ? staffMember.workExperience
+      : getStoredStaffExperience(staffMember.id);
+    const docs = Array.isArray(staffMember.documents)
+      ? staffMember.documents.map(d => ({
+          id: d.id,
+          type: d.type || d.documentType || 'Identity Proof',
+          documentType: d.documentType || d.type || 'Identity Proof',
+          number: d.number || d.documentNumber || '',
+          documentNumber: d.documentNumber || d.number || '',
+          url: d.url || d.documentUrl || '',
+        }))
+      : [];
+
     setStaffFormData({
       id: staffMember.id,
       firstName: staffMember.firstName || nameParts[0] || '',
@@ -131,8 +136,8 @@ export default function StaffManagementPage() {
       enableAppointments: staffMember.enableAppointments !== undefined ? staffMember.enableAppointments : true,
       showAppointmentsInDashboard: staffMember.showAppointmentsInDashboard !== undefined ? staffMember.showAppointmentsInDashboard : true,
       weeklyOff: staffMember.weeklyOff || 'Monday',
-      workExperience: staffMember.workExperience || [],
-      documents: staffMember.documents || [],
+      workExperience: exp,
+      documents: docs,
       joiningDate: staffMember.joiningDate || '',
       designation: staffMember.designation || '',
       uanNumber: staffMember.uanNumber || '',
@@ -159,9 +164,12 @@ export default function StaffManagementPage() {
   };
 
   const handleToggleStatus = (staffId) => {
-    const updated = staffList.map(s => (s.id === staffId ? { ...s, active: s.active === false ? true : false } : s));
+    const target = staffList.find(s => s.id === staffId);
+    const newStatus = target ? target.active === false : false;
+    const updated = staffList.map(s => (s.id === staffId ? { ...s, active: newStatus } : s));
     setStaffList(updated);
     saveMasterStaff(updated);
+    toggleStaffStatusInBackend(staffId, newStatus);
     showToast('Staff status updated successfully.');
   };
 
@@ -179,7 +187,7 @@ export default function StaffManagementPage() {
     setStaffFormData(emptyStaffForm);
   };
 
-  const handleSaveStaffForm = (e) => {
+  const handleSaveStaffForm = async (e) => {
     if (e) e.preventDefault();
     const fullName = `${staffFormData.firstName} ${staffFormData.lastName}`.trim() || staffFormData.name.trim();
     if (!fullName) {
@@ -194,53 +202,49 @@ export default function StaffManagementPage() {
     const resolvedPosition = staffFormData.position?.trim() || staffFormData.designation?.trim() || 'Stylist';
     const resolvedDesignation = staffFormData.designation?.trim() || staffFormData.position?.trim() || 'Stylist';
 
-    let updated;
-    if (selectedStaffId) {
-      // Editing existing staff
-      updated = staffList.map(s => {
-        if (s.id === selectedStaffId) {
-          return {
-            ...s,
-            ...staffFormData,
-            name: fullName,
-            phone: staffFormData.mobile,
-            position: resolvedPosition,
-            designation: resolvedDesignation,
-            role: 'Stylist',
-          };
-        }
-        return s;
-      });
-      showToast(`Staff "${fullName}" updated successfully!`);
-    } else {
-      // Creating new staff
-      const nextEmpNum = 'EMP-' + String(100 + staffList.length + 1).padStart(3, '0');
-      const newStaff = {
-        ...staffFormData,
-        id: Date.now(),
-        empNo: nextEmpNum,
-        name: fullName,
-        phone: staffFormData.mobile,
-        position: resolvedPosition,
-        designation: resolvedDesignation,
-        role: 'Stylist',
-      };
-      updated = [newStaff, ...staffList];
-      showToast(`New Staff "${fullName}" created successfully!`);
-    }
+    try {
+      setIsSavingStaff(true);
+      if (selectedStaffId) {
+        // Editing existing staff
+        await updateStaffMember(selectedStaffId, {
+          ...staffFormData,
+          name: fullName,
+          phone: staffFormData.mobile,
+          position: resolvedPosition,
+          designation: resolvedDesignation,
+        });
+        showToast(`Staff "${fullName}" updated successfully!`);
+      } else {
+        // Creating new staff
+        const nextEmpNum = 'EMP-' + String(100 + staffList.length + 1).padStart(3, '0');
+        await addStaffMember({
+          ...staffFormData,
+          empNo: nextEmpNum,
+          name: fullName,
+          phone: staffFormData.mobile,
+          position: resolvedPosition,
+          designation: resolvedDesignation,
+        });
+        showToast(`New Staff "${fullName}" created successfully!`);
+      }
 
-    setStaffList(updated);
-    saveMasterStaff(updated);
-    setShowStaffModal(false);
+      await syncStaffFromBackend();
+      setStaffList(getMasterStaff());
+      setShowStaffModal(false);
+    } catch (err) {
+      console.error('Save staff error:', err);
+      alert(err.message || 'Failed to save staff member to database.');
+    } finally {
+      setIsSavingStaff(false);
+    }
   };
 
-  const handleDeleteStaff = (staffId) => {
+  const handleDeleteStaff = async (staffId) => {
     const target = staffList.find(st => st.id === staffId);
     const targetName = target ? target.name : 'this staff member';
     if (window.confirm(`Are you sure you want to delete "${targetName}"?`)) {
-      const updated = staffList.filter(st => st.id !== staffId);
+      const updated = await deleteStaffMember(staffId);
       setStaffList(updated);
-      saveMasterStaff(updated);
       showToast('Staff member removed successfully.');
     }
   };
@@ -284,84 +288,6 @@ export default function StaffManagementPage() {
 
   const uniquePositions = Array.from(new Set(staffList.map(s => s.position || s.designation || 'Stylist').filter(Boolean)));
 
-  // Selected staff object for payslip
-  const currentPayslipStaff = staffList.find(s => String(s.id) === String(payslipStaffId)) || staffList[0];
-  const payslipSalary = currentPayslipStaff ? getStaffSalaryInfo(currentPayslipStaff) : { base: 25000, comm: 8500, ded: 1500, net: 32000, status: 'Processed' };
-
-  // Tenant branding
-  const tenant = getActiveTenant();
-  const primaryBranch = tenant?.branches?.find(b => b.isPrimary) || tenant?.branches?.[0];
-  const companyName = tenant?.companyName || tenant?.brandName || (tenant?.logoTextPrefix ? `${tenant.logoTextPrefix}${tenant.logoTextSuffix}` : 'ABCD');
-  const companyLocation = tenant?.location || primaryBranch?.name || 'vmd, Pune';
-  const companyPhone = tenant?.phone || tenant?.mobile || '';
-  const companyGstin = tenant?.gstin || tenant?.gstNumber || '';
-
-  const handlePrintPayslip = () => {
-    window.print();
-  };
-
-  const handleDownloadPayslipTxt = () => {
-    if (!currentPayslipStaff) return;
-    const textData = `
-=============================================================
-                     PAYSLIP / SALARY RECEIPT
-                     ${companyName.toUpperCase()}
-           Location: ${companyLocation}
-           ${companyPhone ? `Contact: ${companyPhone}` : ''}
-           ${companyGstin ? `GSTIN: ${companyGstin}` : ''}
-=============================================================
-Month & Year: ${selectedMonth} ${selectedYear}
-Employee Name: ${currentPayslipStaff.name}
-Employee ID: ${currentPayslipStaff.empNo || `EMP-${currentPayslipStaff.id}`}
-Designation: ${currentPayslipStaff.designation || currentPayslipStaff.position || 'Stylist'}
-Mobile: ${currentPayslipStaff.phone || currentPayslipStaff.mobile || '-'}
-Bank Name: ${currentPayslipStaff.bankName || 'HDFC Bank'}
-Account Number: ${currentPayslipStaff.accountNumber || 'XXXXXXXX4829'}
-IFSC Code: ${currentPayslipStaff.ifsc || 'HDFC0001234'}
-UAN Number: ${currentPayslipStaff.uanNumber || '100987654321'}
--------------------------------------------------------------
-EARNINGS BREAKDOWN:
-  1. Basic Salary                     : ₹${payslipSalary.base.toLocaleString()}
-  2. Service & Retail Commission     : +₹${payslipSalary.comm.toLocaleString()}
--------------------------------------------------------------
-DEDUCTIONS:
-  1. Professional Tax / TDS / Advance : -₹${payslipSalary.ded.toLocaleString()}
--------------------------------------------------------------
-NET SALARY PAYABLE                    : ₹${payslipSalary.net.toLocaleString()}
-Status                                : ${payslipSalary.status}
-=============================================================
-`;
-    const blob = new Blob([textData], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `Payslip_${currentPayslipStaff.name.replace(/\s+/g, '_')}_${selectedMonth}_${selectedYear}.txt`;
-    link.click();
-    URL.revokeObjectURL(url);
-    showToast(`Payslip for ${currentPayslipStaff.name} downloaded successfully!`);
-  };
-
-  const handleSendWhatsApp = () => {
-    setWhatsAppNotice(true);
-    setTimeout(() => setWhatsAppNotice(false), 4000);
-  };
-
-  const handleExportSalariesCSV = () => {
-    const header = 'Staff Name,Designation,Basic Salary,Commission,Deductions,Net Pay,Status\n';
-    const rows = staffList.map(st => {
-      const s = getStaffSalaryInfo(st);
-      return `"${st.name}","${st.designation || st.position || 'Stylist'}",${s.base},${s.comm},${s.ded},${s.net},"${s.status}"`;
-    }).join('\n');
-    const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `Salaries_${selectedMonth}_${selectedYear}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
-    showToast(`Salary report exported for ${selectedMonth} ${selectedYear}!`);
-  };
-
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
       {/* Toast Notification */}
@@ -379,64 +305,23 @@ Status                                : ${payslipSalary.status}
             <Users size={22} />
           </div>
           <div>
-            <h1 className="text-xl font-bold text-slate-800">Staff & Payroll Hub</h1>
-            <p className="text-xs text-slate-500 mt-0.5">Manage salon stylists, attendance schedules, monthly payroll, and payslips</p>
+            <h1 className="text-xl font-bold text-slate-800">Staff Management</h1>
+            <p className="text-xs text-slate-500 mt-0.5">Manage salon stylists, attendance schedules, and shift timings</p>
           </div>
         </div>
 
-        {/* Tab Switcher */}
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1 bg-slate-100 p-1.5 rounded-xl border border-slate-200">
-            <button
-              onClick={() => handleTabChange('staff')}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                activeTab === 'staff'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-              }`}
-            >
-              <Users size={14} /> Staff Members
-            </button>
-            <button
-              onClick={() => handleTabChange('salary')}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                activeTab === 'salary'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-              }`}
-            >
-              <DollarSign size={14} /> Salary Management
-            </button>
-            <button
-              onClick={() => handleTabChange('payslips')}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                activeTab === 'payslips'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-              }`}
-            >
-              <FileText size={14} /> Monthly Payslips
-            </button>
-          </div>
-
-          {activeTab === 'staff' && (
-            <button
-              onClick={handleOpenCreateStaff}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition-all active:scale-95"
-            >
-              <Plus size={15} /> Add Staff
-            </button>
-          )}
-        </div>
+        <button
+          onClick={handleOpenCreateStaff}
+          className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition-all active:scale-95"
+        >
+          <Plus size={15} /> Add Staff
+        </button>
       </div>
 
-      {/* ======================================================== */}
-      {/* TAB 1: STAFF DIRECTORY                                   */}
-      {/* ======================================================== */}
-      {activeTab === 'staff' && (
-        <div className="space-y-6">
-          {/* Metric Cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      {/* STAFF DIRECTORY */}
+      <div className="space-y-6">
+        {/* Metric Cards */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-slate-500">Total Staff</span>
@@ -543,7 +428,16 @@ Status                                : ${payslipSalary.status}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filteredStaffList.length === 0 ? (
+                  {isLoadingStaff ? (
+                    <tr>
+                      <td colSpan="7" className="py-14 text-center text-slate-500 text-xs">
+                        <div className="flex flex-col items-center justify-center gap-2">
+                          <Loader2 size={24} className="animate-spin text-indigo-600" />
+                          <span className="font-medium text-slate-600">Loading staff from database...</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : filteredStaffList.length === 0 ? (
                     <tr>
                       <td colSpan="7" className="py-12 text-center text-slate-400 text-xs">
                         No staff members match the selected search and filter criteria.
@@ -635,7 +529,22 @@ Status                                : ${payslipSalary.status}
                           <td className="py-3.5 px-5 text-center">
                             <div className="flex items-center justify-center gap-2">
                               <button
-                                onClick={() => setViewingStaff(st)}
+                                onClick={() => {
+                                  const exp = (st.workExperience && st.workExperience.length > 0)
+                                    ? st.workExperience
+                                    : getStoredStaffExperience(st.id);
+                                  const docs = Array.isArray(st.documents)
+                                    ? st.documents.map(d => ({
+                                        id: d.id,
+                                        type: d.type || d.documentType || 'Identity Proof',
+                                        documentType: d.documentType || d.type || 'Identity Proof',
+                                        number: d.number || d.documentNumber || '',
+                                        documentNumber: d.documentNumber || d.number || '',
+                                        url: d.url || d.documentUrl || '',
+                                      }))
+                                    : [];
+                                  setViewingStaff({ ...st, workExperience: exp, documents: docs });
+                                }}
                                 className="p-1.5 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 rounded-lg transition-colors cursor-pointer"
                                 title="View Full Profile"
                               >
@@ -666,341 +575,6 @@ Status                                : ${payslipSalary.status}
             </div>
           </div>
         </div>
-      )}
-
-      {/* ======================================================== */}
-      {/* TAB 2: SALARY & COMMISSION MANAGEMENT                    */}
-      {/* ======================================================== */}
-      {activeTab === 'salary' && (
-        <div className="space-y-6">
-          {/* Controls Bar & Month/Year Switcher */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-700">
-                <Calendar size={14} className="text-indigo-600" />
-                <span>Period:</span>
-                <select
-                  value={selectedMonth}
-                  onChange={(e) => setSelectedMonth(e.target.value)}
-                  className="bg-transparent font-bold text-slate-800 focus:outline-none cursor-pointer"
-                >
-                  {months.map(m => (
-                    <option key={m} value={m}>{m}</option>
-                  ))}
-                </select>
-                <select
-                  value={selectedYear}
-                  onChange={(e) => setSelectedYear(e.target.value)}
-                  className="bg-transparent font-bold text-slate-800 focus:outline-none cursor-pointer"
-                >
-                  {years.map(y => (
-                    <option key={y} value={y}>{y}</option>
-                  ))}
-                </select>
-              </div>
-
-              <span className="text-xs text-slate-400">
-                Showing computed salary & commissions for {selectedMonth} {selectedYear}
-              </span>
-            </div>
-
-            <button
-              onClick={handleExportSalariesCSV}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs transition-all cursor-pointer active:scale-95"
-            >
-              <Download size={14} /> Export Salaries CSV
-            </button>
-          </div>
-
-          {/* Salary Metric Overview */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs">
-              <span className="text-xs font-bold text-slate-500">Total Net Payable</span>
-              <div className="text-2xl font-black text-indigo-700 mt-1">₹{totalPayrollBudget.toLocaleString()}</div>
-              <span className="text-[11px] text-slate-400 font-medium">Net disbursed salary this month</span>
-            </div>
-            <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs">
-              <span className="text-xs font-bold text-slate-500">Total Base Salary</span>
-              <div className="text-2xl font-black text-slate-800 mt-1">₹{totalBaseSalary.toLocaleString()}</div>
-              <span className="text-[11px] text-slate-400 font-medium">Fixed base pay pool</span>
-            </div>
-            <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs">
-              <span className="text-xs font-bold text-slate-500">Service & Product Commission</span>
-              <div className="text-2xl font-black text-emerald-600 mt-1">+₹{totalCommissions.toLocaleString()}</div>
-              <span className="text-[11px] text-slate-400 font-medium">Incentives earned from POS</span>
-            </div>
-          </div>
-
-          {/* Salary Table */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[780px] text-left border-collapse text-sm">
-                <thead className="bg-slate-50/80 text-xs font-semibold text-slate-500 uppercase tracking-wider border-b border-slate-200">
-                  <tr>
-                    <th className="py-3.5 px-5">Staff Member</th>
-                    <th className="py-3.5 px-4">Designation</th>
-                    <th className="py-3.5 px-4 text-right">Basic Salary</th>
-                    <th className="py-3.5 px-4 text-right">Commission</th>
-                    <th className="py-3.5 px-4 text-right">Deductions</th>
-                    <th className="py-3.5 px-4 text-right font-bold text-slate-900">Net Payable</th>
-                    <th className="py-3.5 px-4 text-center">Status</th>
-                    <th className="py-3.5 px-5 text-center">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {staffList.map((st) => {
-                    const sal = getStaffSalaryInfo(st);
-                    const isProcessed = sal.status === 'Processed';
-
-                    return (
-                      <tr key={st.id} className="hover:bg-slate-50/80 transition-colors">
-                        <td className="py-3.5 px-5">
-                          <div className="font-bold text-slate-800">{st.name}</div>
-                          <div className="text-[11px] text-slate-400 font-mono">{st.phone || st.mobile || '-'}</div>
-                        </td>
-                        <td className="py-3.5 px-4 text-xs text-slate-600 font-medium">
-                          {st.designation || st.position || 'Stylist'}
-                        </td>
-                        <td className="py-3.5 px-4 text-right font-mono font-semibold text-slate-700">
-                          ₹{sal.base.toLocaleString()}
-                        </td>
-                        <td className="py-3.5 px-4 text-right font-mono font-semibold text-emerald-600">
-                          +₹{sal.comm.toLocaleString()}
-                        </td>
-                        <td className="py-3.5 px-4 text-right font-mono font-semibold text-rose-500">
-                          -₹{sal.ded.toLocaleString()}
-                        </td>
-                        <td className="py-3.5 px-4 text-right font-mono font-black text-slate-900 text-sm">
-                          ₹{sal.net.toLocaleString()}
-                        </td>
-                        <td className="py-3.5 px-4 text-center">
-                          <button
-                            type="button"
-                            onClick={() => handleToggleSalaryStatus(st.id)}
-                            className={`px-2.5 py-1 rounded-full text-xs font-bold cursor-pointer transition-all ${
-                              isProcessed
-                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
-                                : 'bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100'
-                            }`}
-                            title="Click to toggle processed/pending"
-                          >
-                            {sal.status}
-                          </button>
-                        </td>
-                        <td className="py-3.5 px-5 text-center">
-                          <button
-                            onClick={() => {
-                              setPayslipStaffId(st.id);
-                              setShowSlip(true);
-                              handleTabChange('payslips');
-                            }}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-bold transition-all cursor-pointer"
-                          >
-                            <FileText size={13} />
-                            <span>View Payslip</span>
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ======================================================== */}
-      {/* TAB 3: MONTHLY PAYSLIPS GENERATOR                        */}
-      {/* ======================================================== */}
-      {activeTab === 'payslips' && (
-        <div className="space-y-6">
-          {/* Controls Bar */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs flex flex-wrap items-center gap-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Select Staff Member</label>
-              <select
-                value={payslipStaffId || ''}
-                onChange={(e) => {
-                  setPayslipStaffId(Number(e.target.value) || e.target.value);
-                  setShowSlip(true);
-                }}
-                className="px-3.5 py-2 border border-slate-200 rounded-xl text-sm font-semibold bg-white text-slate-800 focus:outline-none focus:border-indigo-600 cursor-pointer min-w-[200px]"
-              >
-                {staffList.map(st => (
-                  <option key={st.id} value={st.id}>{st.name} ({st.designation || st.position || 'Staff'})</option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Month</label>
-              <select
-                value={selectedMonth}
-                onChange={(e) => setSelectedMonth(e.target.value)}
-                className="px-3.5 py-2 border border-slate-200 rounded-xl text-sm font-semibold bg-white text-slate-800 focus:outline-none focus:border-indigo-600 cursor-pointer"
-              >
-                {months.map(m => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Year</label>
-              <select
-                value={selectedYear}
-                onChange={(e) => setSelectedYear(e.target.value)}
-                className="px-3.5 py-2 border border-slate-200 rounded-xl text-sm font-semibold bg-white text-slate-800 focus:outline-none focus:border-indigo-600 cursor-pointer"
-              >
-                {years.map(y => (
-                  <option key={y} value={y}>{y}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex items-end pt-5">
-              <button
-                onClick={() => setShowSlip(true)}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded-xl text-sm font-bold shadow-xs transition-all cursor-pointer"
-              >
-                Generate Payslip
-              </button>
-            </div>
-          </div>
-
-          {/* Generated Branded Payslip */}
-          {showSlip && currentPayslipStaff && (
-            <div className="max-w-2xl mx-auto bg-white rounded-2xl border border-slate-200 p-8 shadow-sm space-y-6">
-              {/* Salon Branding Header */}
-              <div className="flex justify-between items-start pb-5 border-b border-slate-200">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-2xl font-black tracking-tight text-indigo-900">
-                      {companyName}
-                    </span>
-                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-indigo-100 text-indigo-800 uppercase">
-                      Official Payslip
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-500 mt-1">
-                    {companyLocation} {companyPhone ? `• Phone: ${companyPhone}` : ''}
-                  </p>
-                  {companyGstin && (
-                    <p className="text-[11px] text-slate-400 font-mono mt-0.5">GSTIN: {companyGstin}</p>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={handlePrintPayslip}
-                    className="p-2 border border-slate-200 hover:bg-slate-50 rounded-xl text-slate-700 transition-colors cursor-pointer"
-                    title="Print Payslip"
-                  >
-                    <Printer size={16} />
-                  </button>
-                  <button
-                    onClick={handleDownloadPayslipTxt}
-                    className="bg-slate-800 hover:bg-slate-900 text-white px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer"
-                  >
-                    <Download size={14} /> Download
-                  </button>
-                  <button
-                    onClick={handleSendWhatsApp}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white p-2 rounded-xl transition-colors cursor-pointer"
-                    title="Send via WhatsApp"
-                  >
-                    <Send size={15} />
-                  </button>
-                </div>
-              </div>
-
-              {whatsAppNotice && (
-                <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-2 rounded-xl text-xs font-medium flex items-center gap-2 animate-in fade-in">
-                  <CheckCircle2 size={15} className="text-emerald-600 shrink-0" />
-                  <span>Payslip PDF sent to {currentPayslipStaff.name}'s WhatsApp number ({currentPayslipStaff.phone || currentPayslipStaff.mobile || 'Registered Phone'})!</span>
-                </div>
-              )}
-
-              {/* Employee Summary Grid */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-50/80 p-4 rounded-xl border border-slate-100 text-xs">
-                <div>
-                  <span className="text-slate-400 block text-[11px]">Employee Name</span>
-                  <span className="font-bold text-slate-800 text-sm">{currentPayslipStaff.name}</span>
-                </div>
-                <div>
-                  <span className="text-slate-400 block text-[11px]">Designation</span>
-                  <span className="font-semibold text-slate-700">{currentPayslipStaff.designation || currentPayslipStaff.position || 'Stylist'}</span>
-                </div>
-                <div>
-                  <span className="text-slate-400 block text-[11px]">Pay Period</span>
-                  <span className="font-semibold text-indigo-700">{selectedMonth} {selectedYear}</span>
-                </div>
-                <div>
-                  <span className="text-slate-400 block text-[11px]">Payment Status</span>
-                  <span className={`font-bold ${payslipSalary.status === 'Processed' ? 'text-emerald-600' : 'text-amber-600'}`}>
-                    {payslipSalary.status}
-                  </span>
-                </div>
-              </div>
-
-              {/* Bank & Compliance Row */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs bg-slate-50/40 p-3 rounded-xl border border-slate-100">
-                <div>
-                  <span className="text-slate-400">Bank:</span>{' '}
-                  <span className="font-semibold text-slate-700">{currentPayslipStaff.bankName || 'HDFC Bank'}</span>
-                </div>
-                <div>
-                  <span className="text-slate-400">A/C:</span>{' '}
-                  <span className="font-mono font-semibold text-slate-700">{currentPayslipStaff.accountNumber || 'XXXXXXXX4829'}</span>
-                </div>
-                <div>
-                  <span className="text-slate-400">IFSC:</span>{' '}
-                  <span className="font-mono font-semibold text-slate-700 uppercase">{currentPayslipStaff.ifsc || 'HDFC0001234'}</span>
-                </div>
-              </div>
-
-              {/* Earnings & Deductions Breakdown */}
-              <div className="space-y-3 pt-2">
-                <div className="flex justify-between items-center text-sm py-2.5 border-b border-slate-100">
-                  <div>
-                    <span className="font-medium text-slate-700">Basic Salary</span>
-                    <p className="text-[11px] text-slate-400">Fixed monthly retainer</p>
-                  </div>
-                  <span className="font-mono font-bold text-slate-800">₹{payslipSalary.base.toLocaleString()}</span>
-                </div>
-
-                <div className="flex justify-between items-center text-sm py-2.5 border-b border-slate-100">
-                  <div>
-                    <span className="font-medium text-slate-700">Service & Retail Commission</span>
-                    <p className="text-[11px] text-slate-400">POS completed appointments & retail incentive</p>
-                  </div>
-                  <span className="font-mono font-bold text-emerald-600">+₹{payslipSalary.comm.toLocaleString()}</span>
-                </div>
-
-                <div className="flex justify-between items-center text-sm py-2.5 border-b border-slate-100">
-                  <div>
-                    <span className="font-medium text-slate-700">Professional Deductions / TDS</span>
-                    <p className="text-[11px] text-slate-400">Statutory deductions and advance recovery</p>
-                  </div>
-                  <span className="font-mono font-bold text-rose-500">-₹{payslipSalary.ded.toLocaleString()}</span>
-                </div>
-
-                {/* Net Salary Payable */}
-                <div className="flex justify-between items-center text-base py-3.5 bg-gradient-to-r from-indigo-50/80 to-slate-50 px-5 rounded-xl border border-indigo-100">
-                  <div>
-                    <span className="font-bold text-slate-800 block">Net Salary Payable</span>
-                    <span className="text-[11px] text-slate-500">Credited to registered bank account</span>
-                  </div>
-                  <span className="font-mono font-black text-indigo-700 text-xl">
-                    ₹{payslipSalary.net.toLocaleString()}
-                  </span>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
 
       {/* ======================================================== */}
       {/* MODAL: VIEW STAFF DETAILS (Eye Icon)                     */}
@@ -1103,13 +677,9 @@ Status                                : ${payslipSalary.status}
                     <span className="text-slate-500 font-medium">Joining Date:</span>
                     <span className="font-semibold text-slate-800">{viewingStaff.joiningDate || 'Not set'}</span>
                   </div>
-                  <div className="flex justify-between py-1 border-b border-slate-200/60 sm:border-b-0">
+                  <div className="flex justify-between py-1">
                     <span className="text-slate-500 font-medium">Reporting Manager:</span>
                     <span className="font-semibold text-slate-800">{viewingStaff.reportingTo || 'Owner'}</span>
-                  </div>
-                  <div className="flex justify-between py-1">
-                    <span className="text-slate-500 font-medium">UAN Number:</span>
-                    <span className="font-semibold text-slate-800 font-mono">{viewingStaff.uanNumber || 'Not set'}</span>
                   </div>
                 </div>
               </div>
@@ -1161,8 +731,8 @@ Status                                : ${payslipSalary.status}
                     <div className="space-y-1.5">
                       {viewingStaff.documents.map((doc, idx) => (
                         <div key={idx} className="p-2 bg-slate-50 border border-slate-100 rounded-lg text-xs flex justify-between">
-                          <span className="font-medium text-slate-700">{doc.type}</span>
-                          <span className="font-mono text-slate-600">{doc.number}</span>
+                          <span className="font-medium text-slate-700">{doc.type || doc.documentType || 'Document'}</span>
+                          <span className="font-mono text-slate-600">{doc.number || doc.documentNumber || '-'}</span>
                         </div>
                       ))}
                     </div>
@@ -1301,7 +871,7 @@ Status                                : ${payslipSalary.status}
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-semibold text-slate-600 mb-1.5">Email Address</label>
                     <input 
@@ -1319,16 +889,6 @@ Status                                : ${payslipSalary.status}
                       value={staffFormData.dob}
                       onChange={(e) => setStaffFormData(p => ({ ...p, dob: e.target.value }))}
                       className="w-full px-3.5 py-2 border border-slate-200 rounded-lg text-sm text-slate-800 bg-white focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-600 mb-1.5">Position / Job Title</label>
-                    <input 
-                      type="text"
-                      value={staffFormData.position}
-                      onChange={(e) => setStaffFormData(p => ({ ...p, position: e.target.value }))}
-                      placeholder="e.g. Senior Stylist, Beautician"
-                      className="w-full px-3.5 py-2 border border-slate-200 rounded-lg text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
                     />
                   </div>
                 </div>
@@ -1372,7 +932,7 @@ Status                                : ${payslipSalary.status}
               {/* SECTION 3: JOINING DETAILS */}
               <div className="border border-slate-200 rounded-xl p-5 bg-white space-y-4">
                 <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Joining & Employment Details</h4>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-semibold text-slate-600 mb-1.5">Joining Date</label>
                     <input 
@@ -1383,23 +943,16 @@ Status                                : ${payslipSalary.status}
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-slate-600 mb-1.5">Designation</label>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1.5">Designation / Role</label>
                     <input 
                       type="text"
-                      value={staffFormData.designation}
-                      onChange={(e) => setStaffFormData(p => ({ ...p, designation: e.target.value }))}
-                      placeholder="Designation"
+                      value={staffFormData.designation || staffFormData.position}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setStaffFormData(p => ({ ...p, designation: val, position: val }));
+                      }}
+                      placeholder="e.g. Hair Specialist, Senior Stylist, Beautician"
                       className="w-full px-3.5 py-2 border border-slate-200 rounded-lg text-sm text-slate-800 focus:outline-none focus:border-sky-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-600 mb-1.5">UAN Number</label>
-                    <input 
-                      type="text"
-                      value={staffFormData.uanNumber}
-                      onChange={(e) => setStaffFormData(p => ({ ...p, uanNumber: e.target.value }))}
-                      placeholder="UAN Number"
-                      className="w-full px-3.5 py-2 border border-slate-200 rounded-lg text-sm text-slate-800 font-mono focus:outline-none focus:border-sky-500"
                     />
                   </div>
                 </div>
@@ -1529,7 +1082,7 @@ Status                                : ${payslipSalary.status}
                       {staffFormData.documents.map((doc, i) => (
                         <div key={i} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg text-xs border border-slate-100">
                           <div>
-                            <span className="font-bold text-slate-800">{doc.type}</span>: <span className="font-mono text-slate-600">{doc.number}</span>
+                            <span className="font-bold text-slate-800">{doc.type || doc.documentType || 'Document'}</span>: <span className="font-mono text-slate-600">{doc.number || doc.documentNumber || '-'}</span>
                           </div>
                           <button 
                             type="button"
@@ -1558,9 +1111,11 @@ Status                                : ${payslipSalary.status}
                 </button>
                 <button
                   type="submit"
-                  className="px-7 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-sm transition-all active:scale-95 cursor-pointer"
+                  disabled={isSavingStaff}
+                  className="px-7 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-sm transition-all active:scale-95 cursor-pointer flex items-center gap-2"
                 >
-                  {isEditingStaff ? 'Save Changes' : 'Create Staff Member'}
+                  {isSavingStaff && <Loader2 size={14} className="animate-spin" />}
+                  {isSavingStaff ? 'Saving...' : (isEditingStaff ? 'Save Changes' : 'Create Staff Member')}
                 </button>
               </div>
             </form>

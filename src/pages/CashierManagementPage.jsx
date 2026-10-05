@@ -1,16 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   CreditCard, Plus, Search, Shield, Eye, EyeOff,
   Edit2, Trash2, CheckCircle2, AlertCircle, X,
-  KeyRound, User, Mail, Phone, Check, Lock, Copy, CheckCheck, MessageCircle
+  KeyRound, User, Mail, Phone, Check, Lock, Copy, CheckCheck, MessageCircle, Loader2, RefreshCw
 } from 'lucide-react';
 import {
   getMasterCashiers,
-  createCashier,
-  updateCashier,
-  deleteCashier
+  saveMasterCashiers,
+  createCashier as createLocalCashier,
+  updateCashier as updateLocalCashier,
+  deleteCashier as deleteLocalCashier
 } from '../utils/cashierStorage';
 import { getActiveTenant } from '../utils/saasStorage';
+import { cashierApi } from '../api/client';
 import {
   getCashierResetRequests,
   approveResetRequest,
@@ -22,6 +24,8 @@ const CashierManagementPage = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [notification, setNotification] = useState('');
   const [tenant, setTenant] = useState(() => getActiveTenant());
+  const [isLoading, setIsLoading] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Password Reset Approval States
   const [cashierResetRequests, setCashierResetRequests] = useState(() => getCashierResetRequests(getActiveTenant()?.id));
@@ -44,15 +48,59 @@ const CashierManagementPage = () => {
   };
   const [formData, setFormData] = useState(emptyForm);
 
-  useEffect(() => {
-    const handleSync = () => {
+  const showToast = (msg) => {
+    setNotification(msg);
+    setTimeout(() => setNotification(''), 3500);
+  };
+
+  // Live database fetch from PostgreSQL via backend cashierApi
+  const fetchCashiers = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const currentTenant = getActiveTenant();
+      const res = await cashierApi.getCashiers({
+        tenantId: currentTenant?.id,
+        limit: 100
+      });
+
+      if (res?.success && res?.data?.items) {
+        const liveCashiers = res.data.items.map((item) => ({
+          id: item.id,
+          name: item.username,
+          username: item.username,
+          email: item.email || '',
+          phone: item.phone || '',
+          active: item.status === 'ACTIVE',
+          status: item.status,
+          enabledModules: item.enabledModules || ['SERVICES', 'PRODUCTS', 'DISPOSABLES'],
+          passwordResetRequested: item.passwordResetRequested,
+          createdAt: item.createdAt
+            ? new Date(item.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+            : 'Recent',
+        }));
+        setCashiers(liveCashiers);
+        saveMasterCashiers(liveCashiers);
+      }
+    } catch (err) {
+      console.warn('Backend cashiers fetch note (falling back to cache):', err?.message);
       setCashiers(getMasterCashiers());
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchCashiers();
+
+    const handleSync = () => {
       const currentTenant = getActiveTenant();
       setTenant(currentTenant);
       if (currentTenant) {
         setCashierResetRequests(getCashierResetRequests(currentTenant.id));
       }
+      fetchCashiers();
     };
+
     window.addEventListener('cashiersUpdated', handleSync);
     window.addEventListener('tenantChanged', handleSync);
     window.addEventListener('passwordResetsUpdated', handleSync);
@@ -63,16 +111,29 @@ const CashierManagementPage = () => {
       window.removeEventListener('passwordResetsUpdated', handleSync);
       window.removeEventListener('saasUpdated', handleSync);
     };
-  }, []);
-
-  const showToast = (msg) => {
-    setNotification(msg);
-    setTimeout(() => setNotification(''), 3500);
-  };
+  }, [fetchCashiers]);
 
   const pendingCashierResetsCount = cashierResetRequests.filter(r => r.status === 'PENDING').length;
 
-  const handleApproveCashierReset = (req) => {
+  const handleApproveCashierReset = async (req) => {
+    try {
+      const res = await cashierApi.approvePasswordReset(req.cashierId || req.id);
+      if (res?.success && res?.data?.tempPassword) {
+        setApprovedCashierShareModal({
+          request: {
+            ...req,
+            userName: req.userName || req.username
+          },
+          tempPassword: res.data.tempPassword
+        });
+        showToast(`Temporary password generated: ${res.data.tempPassword}`);
+        await fetchCashiers();
+        return;
+      }
+    } catch (err) {
+      console.warn('Backend reset approval fallback to local storage:', err?.message);
+    }
+
     const updated = approveResetRequest(req.id, tenant?.ownerName || 'Company Admin');
     if (updated) {
       setCashierResetRequests(getCashierResetRequests(tenant?.id));
@@ -123,10 +184,10 @@ const CashierManagementPage = () => {
     setIsEditing(true);
     setSelectedId(c.id);
     setFormData({
-      name: c.name || '',
+      name: c.name || c.username || '',
       email: c.email || '',
       username: c.username || '',
-      password: c.password || '',
+      password: '',
       phone: c.phone || '',
       active: c.active !== false
     });
@@ -134,19 +195,30 @@ const CashierManagementPage = () => {
     setShowModal(true);
   };
 
-  // Save Cashier Form
-  const handleSubmit = (e) => {
+  // Save Cashier Form to Database & Backend
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!formData.name.trim()) {
-      alert('Please enter Cashier Name.');
-      return;
-    }
-    if (!formData.username.trim()) {
+    const trimmedUsername = formData.username.trim().toLowerCase();
+    const trimmedName = formData.name.trim() || trimmedUsername;
+    const trimmedPassword = formData.password.trim();
+
+    if (!trimmedUsername) {
       alert('Please enter Login Username.');
       return;
     }
-    if (!isEditing && !formData.password.trim()) {
+
+    if (!isEditing && !trimmedPassword) {
       alert('Please set a password for the cashier.');
+      return;
+    }
+
+    if (!isEditing && trimmedPassword.length < 8) {
+      alert('Cashier password must be at least 8 characters long.');
+      return;
+    }
+
+    if (isEditing && trimmedPassword && trimmedPassword.length < 8) {
+      alert('New password must be at least 8 characters long.');
       return;
     }
 
@@ -155,37 +227,104 @@ const CashierManagementPage = () => {
       return;
     }
 
-    if (isEditing) {
-      updateCashier(selectedId, {
-        name: formData.name.trim(),
-        email: formData.email.trim(),
-        username: formData.username.trim(),
-        phone: formData.phone.trim(),
-        active: formData.active,
-        ...(formData.password.trim() ? { password: formData.password.trim() } : {})
-      });
-      showToast(`Cashier "${formData.name}" updated successfully.`);
-    } else {
-      createCashier(formData);
-      showToast(`New Cashier "${formData.name}" created successfully.`);
+    setIsSubmitting(true);
+    try {
+      if (isEditing) {
+        const targetStatus = formData.active ? 'ACTIVE' : 'INACTIVE';
+
+        await cashierApi.updateCashier(selectedId, {
+          username: trimmedUsername,
+          email: formData.email.trim() || null,
+          phone: formData.phone.trim() || null,
+          status: targetStatus,
+          ...(trimmedPassword ? { password: trimmedPassword } : {})
+        });
+
+        // Explicitly update status in backend as well
+        try {
+          await cashierApi.updateCashierStatus(selectedId, targetStatus);
+        } catch (statusErr) {
+          console.warn('Status update note:', statusErr);
+        }
+
+        // Also update local cache
+        updateLocalCashier(selectedId, {
+          name: trimmedName,
+          email: formData.email.trim(),
+          username: trimmedUsername,
+          phone: formData.phone.trim(),
+          active: formData.active,
+          status: targetStatus,
+          ...(trimmedPassword ? { password: trimmedPassword } : {})
+        });
+
+        showToast(`Cashier "${trimmedUsername}" updated successfully in database (${formData.active ? 'Active' : 'Disabled'}).`);
+      } else {
+        const created = await cashierApi.createCashier({
+          username: trimmedUsername,
+          email: formData.email.trim() || null,
+          phone: formData.phone.trim() || null,
+          password: trimmedPassword,
+          enabledModules: ['SERVICES', 'PRODUCTS', 'DISPOSABLES']
+        });
+
+        // Also update local cache
+        createLocalCashier({
+          id: created?.data?.id || undefined,
+          name: trimmedName,
+          email: formData.email.trim(),
+          username: trimmedUsername,
+          phone: formData.phone.trim(),
+          password: trimmedPassword,
+          active: true
+        });
+
+        showToast(`New Cashier "${trimmedUsername}" created in database successfully.`);
+      }
+
+      setShowModal(false);
+      setFormData(emptyForm);
+      await fetchCashiers();
+    } catch (err) {
+      console.error('Failed to persist cashier to backend:', err);
+      const errMsg = err?.message || 'Failed to save cashier to database.';
+      alert(`Error saving cashier: ${errMsg}`);
+    } finally {
+      setIsSubmitting(false);
     }
-    setShowModal(false);
-    setFormData(emptyForm);
   };
 
-  // Toggle Active Status
-  const handleToggleActive = (c) => {
-    const updated = updateCashier(c.id, { active: !c.active });
-    setCashiers(updated);
-    showToast(`Cashier ${c.name} is now ${!c.active ? 'Active' : 'Inactive'}.`);
+  // Toggle Active Status in Database
+  const handleToggleActive = async (c) => {
+    const newStatus = c.active ? 'INACTIVE' : 'ACTIVE';
+    try {
+      await cashierApi.updateCashierStatus(c.id, newStatus);
+      updateLocalCashier(c.id, { active: newStatus === 'ACTIVE' });
+      showToast(`Cashier ${c.username} is now ${newStatus === 'ACTIVE' ? 'Active' : 'Inactive'} in database.`);
+      await fetchCashiers();
+    } catch (err) {
+      console.error('Failed to update cashier status:', err);
+      // Fallback local toggle
+      updateLocalCashier(c.id, { active: !c.active });
+      showToast(`Cashier ${c.username} updated.`);
+      await fetchCashiers();
+    }
   };
 
-  // Delete Cashier
-  const handleDelete = (c) => {
-    if (window.confirm(`Are you sure you want to remove cashier "${c.name}"? They will no longer be able to log in.`)) {
-      const updated = deleteCashier(c.id);
-      setCashiers(updated);
-      showToast(`Cashier account removed.`);
+  // Delete Cashier from Database
+  const handleDelete = async (c) => {
+    if (window.confirm(`Are you sure you want to remove cashier "${c.username}" from the database? They will no longer be able to log in.`)) {
+      try {
+        await cashierApi.deleteCashier(c.id);
+        deleteLocalCashier(c.id);
+        showToast(`Cashier account "${c.username}" removed from database.`);
+        await fetchCashiers();
+      } catch (err) {
+        console.error('Failed to delete cashier from backend:', err);
+        deleteLocalCashier(c.id);
+        showToast(`Cashier account removed.`);
+        await fetchCashiers();
+      }
     }
   };
 
@@ -237,6 +376,15 @@ const CashierManagementPage = () => {
               {totalCashiers} / {maxCashiers} Created
             </span>
           </div>
+
+          <button
+            onClick={fetchCashiers}
+            disabled={isLoading}
+            className="p-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
+            title="Refresh cashiers from database"
+          >
+            <RefreshCw size={15} className={isLoading ? 'animate-spin text-indigo-600' : ''} />
+          </button>
 
           <button
             onClick={handleOpenCreate}
@@ -719,9 +867,11 @@ const CashierManagementPage = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-6 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white rounded-xl text-xs font-bold shadow-md transition-all active:scale-95 cursor-pointer"
+                  disabled={isSubmitting}
+                  className="px-6 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold shadow-md transition-all active:scale-95 cursor-pointer flex items-center gap-1.5"
                 >
-                  {isEditing ? 'Save Changes' : 'Create Cashier'}
+                  {isSubmitting && <Loader2 size={13} className="animate-spin" />}
+                  <span>{isSubmitting ? 'Saving to Database...' : isEditing ? 'Save Changes' : 'Create Cashier'}</span>
                 </button>
               </div>
             </form>

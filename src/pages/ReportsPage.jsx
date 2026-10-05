@@ -3,10 +3,14 @@ import { FileText, Download, Calendar, Filter, ChevronDown, Search, ArrowUpDown,
 import { getOrders } from '../utils/orderStorage';
 import { getAppointments } from '../utils/appointmentStorage';
 import { getExpenses } from '../utils/expenseStorage';
+import { getCustomers } from '../utils/customerStorage';
+import { getPackages } from '../utils/packageStorage';
+import { reportsApi } from '../api/client';
 
 const parseDateToMs = (dateStr) => {
   if (!dateStr) return 0;
-  const parts = String(dateStr).trim().split('-');
+  const clean = String(dateStr).trim().replace(/\s+/g, '-');
+  const parts = clean.split('-');
   if (parts.length === 3) {
     if (parts[0].length === 4) {
       // YYYY-MM-DD
@@ -26,14 +30,22 @@ const parseDateToMs = (dateStr) => {
 
 const getInitialDates = () => {
   const now = new Date();
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const curMonth = months[now.getMonth()];
   const curYear = now.getFullYear();
+  const curMonth = String(now.getMonth() + 1).padStart(2, '0');
   const curDay = String(now.getDate()).padStart(2, '0');
   return {
-    from: `01-${curMonth}-${curYear}`,
-    to: `${curDay}-${curMonth}-${curYear}`
+    from: `${curYear}-${curMonth}-01`,
+    to: `${curYear}-${curMonth}-${curDay}`
   };
+};
+
+const toDisplayDate = (dateStr) => {
+  if (!dateStr) return '';
+  const ms = parseDateToMs(dateStr);
+  if (!ms) return dateStr;
+  const d = new Date(ms);
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${String(d.getDate()).padStart(2, '0')}-${months[d.getMonth()]}-${d.getFullYear()}`;
 };
 
 const isDateInRange = (orderDateStr, fromStr, toStr) => {
@@ -94,6 +106,27 @@ export default function ReportsPage() {
   const [orders, setOrders] = useState(() => getOrders());
   const [appointments, setAppointments] = useState(() => getAppointments());
   const [expenses, setExpenses] = useState(() => getExpenses());
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [backendRedemptions, setBackendRedemptions] = useState([]);
+
+  useEffect(() => {
+    if (selectedReport === 'Package Redemption') {
+      (async () => {
+        try {
+          const res = await reportsApi.getPackageRedemption({
+            startDate: appliedFromDate,
+            endDate: appliedToDate,
+          });
+          const rows = res?.data?.rows || (Array.isArray(res?.data) ? res.data : []);
+          if (Array.isArray(rows)) {
+            setBackendRedemptions(rows);
+          }
+        } catch (err) {
+          console.warn('Package redemption report fetch:', err);
+        }
+      })();
+    }
+  }, [selectedReport, appliedFromDate, appliedToDate]);
 
   useEffect(() => {
     const handleSync = () => {
@@ -153,11 +186,8 @@ export default function ReportsPage() {
       ]
     },
     {
-      category: 'Memberships & Packages',
+      category: 'Packages Report',
       reports: [
-        'Membership Sold',
-        'Membership Redemption',
-        'Inter-Store Membership Report',
         'Packages Sold',
         'Package Redemption',
       ]
@@ -197,11 +227,15 @@ export default function ReportsPage() {
   const getReportColumns = () => {
     switch (selectedReport) {
       case 'Sales Summary':
-        return ['Date', 'Invoices', 'Services Rev', 'Product Rev', 'Discount', 'Total Net Revenue'];
+        return ['Date', 'Invoices', 'Services Rev', 'Product Rev', 'Package Rev', 'Discount', 'Total Net Revenue'];
       case 'Product Revenue':
         return ['Product Name', 'Category', 'Units Sold', 'Unit Price', 'Total Revenue'];
       case 'Service Revenue':
         return ['Service Name', 'Category', 'Times Performed', 'Rate', 'Discount', 'Net Amount'];
+      case 'Packages Sold':
+        return ['Package Name', 'Customer Name', 'Category', 'Units Sold', 'Rate', 'Total Revenue'];
+      case 'Package Redemption':
+        return ['Customer Name', 'Package Name', 'Total Sessions', 'Sessions Redeemed', 'Sessions Remaining', 'Date', 'Status'];
       case 'Monthly Sale':
         return ['Month', 'Total Orders', 'Service Revenue', 'Product Revenue', 'Total Revenue'];
       case 'Day Wise Report':
@@ -210,8 +244,6 @@ export default function ReportsPage() {
         return ['Particulars / Category', 'POS Revenue', 'Direct Expenses', 'Overhead', 'Net Profit / Loss'];
       case 'Daily Stock':
         return ['Item Name', 'Category', 'Opening Stock', 'Received', 'Consumed / Sold', 'Closing Stock'];
-      case 'Membership Sold':
-        return ['Guest Name', 'Membership Plan', 'Date Assigned', 'Price Paid', 'Valid Till', 'Status'];
       case 'Appointment Report':
         return ['Invoice Number', 'Customer Name', 'Service', 'Staff', 'Time Slot', 'Date', 'Status'];
       case 'Cancelled Orders':
@@ -236,6 +268,7 @@ export default function ReportsPage() {
               invoices: 0,
               servicesRev: 0,
               productRev: 0,
+              packageRev: 0,
               discount: 0,
               totalNet: 0
             };
@@ -248,9 +281,14 @@ export default function ReportsPage() {
             const disc = Number(item.discAmount) || 0;
             const lineTotal = Math.max(0, (price * qty) - disc);
 
-            const isProd = item.itemType === 'product' || (!item.itemType && item.category === 'PRODUCT');
+            const type = (item.itemType || '').toLowerCase();
+            const cat = (item.category || '').toUpperCase();
+            const isProd = type === 'product' || cat === 'PRODUCT';
+            const isPkg = type === 'package' || cat === 'PACKAGE';
             if (isProd) {
               byDate[d].productRev += lineTotal;
+            } else if (isPkg) {
+              byDate[d].packageRev += lineTotal;
             } else {
               byDate[d].servicesRev += lineTotal;
             }
@@ -267,6 +305,7 @@ export default function ReportsPage() {
             String(r.invoices),
             `₹${r.servicesRev.toLocaleString()}`,
             `₹${r.productRev.toLocaleString()}`,
+            `₹${r.packageRev.toLocaleString()}`,
             `₹${r.discount.toLocaleString()}`,
             `₹${r.totalNet.toLocaleString()}`
           ];
@@ -278,8 +317,10 @@ export default function ReportsPage() {
         const prodMap = {};
         filteredOrders.forEach(o => {
           (o.items || []).forEach(item => {
-            const isProd = item.itemType === 'product' || (!item.itemType && (item.category === 'PRODUCT' || item.category === 'SKIN' || item.category === 'HAIR'));
-            if (item.itemType === 'product' || (!item.itemType && item.category === 'PRODUCT')) {
+            const type = (item.itemType || '').toLowerCase();
+            const cat = (item.category || '').toUpperCase();
+            const isProd = type === 'product' || cat === 'PRODUCT' || cat === 'RETAIL';
+            if (isProd) {
               const name = item.name || 'Retail Product';
               if (!prodMap[name]) {
                 prodMap[name] = {
@@ -312,9 +353,11 @@ export default function ReportsPage() {
         const srvMap = {};
         filteredOrders.forEach(o => {
           (o.items || []).forEach(item => {
-            const isProd = item.itemType === 'product' || (!item.itemType && item.category === 'PRODUCT');
-            const isPkg = item.itemType === 'package' || item.category === 'PACKAGE';
-            const isMem = item.itemType === 'membership' || item.category === 'MEMBERSHIP';
+            const type = (item.itemType || '').toLowerCase();
+            const cat = (item.category || '').toUpperCase();
+            const isProd = type === 'product' || cat === 'PRODUCT' || cat === 'RETAIL';
+            const isPkg = type === 'package' || cat === 'PACKAGE';
+            const isMem = type === 'membership' || cat === 'MEMBERSHIP';
             if (!isProd && !isPkg && !isMem) {
               const name = item.name || 'Salon Service';
               if (!srvMap[name]) {
@@ -344,6 +387,182 @@ export default function ReportsPage() {
           `₹${s.discount.toLocaleString()}`,
           `₹${s.netAmount.toLocaleString()}`
         ]);
+      }
+
+      // REAL DATA: Packages Sold (Aggregated from packages in orders)
+      case 'Packages Sold': {
+        const pkgMap = {};
+        const masterPackages = getPackages() || [];
+        filteredOrders.forEach(o => {
+          (o.items || []).forEach(item => {
+            const type = (item.itemType || '').toLowerCase();
+            const cat = (item.category || '').toUpperCase();
+            const isPkg = type === 'package' || cat === 'PACKAGE';
+            if (isPkg) {
+              const name = item.name || 'Salon Package';
+              const customerName = o.guest?.name || 'Customer';
+              const key = `${name}_${customerName}_${o.id || ''}`;
+              
+              const matchedMaster = masterPackages.find(p => p.name && p.name.trim().toLowerCase() === name.trim().toLowerCase());
+              const resolvedCategory = (item.category && item.category !== 'Special Packages' && item.category !== 'PACKAGE' ? item.category : null)
+                || (matchedMaster?.header && matchedMaster.header !== 'Special Packages' ? matchedMaster.header : null)
+                || (matchedMaster?.category && matchedMaster.category !== 'Special Packages' ? matchedMaster.category : null)
+                || matchedMaster?.header
+                || item.category
+                || 'Special Packages';
+
+              if (!pkgMap[key]) {
+                pkgMap[key] = {
+                  name,
+                  customerName,
+                  category: resolvedCategory,
+                  unitsSold: 0,
+                  rate: Number(item.price) || 0,
+                  discount: Number(item.discAmount) || 0,
+                  totalRevenue: 0
+                };
+              }
+              const q = Number(item.qty) || 1;
+              const disc = Number(item.discAmount) || 0;
+              pkgMap[key].unitsSold += q;
+              pkgMap[key].totalRevenue += Math.max(0, ((Number(item.price) || 0) * q) - disc);
+            }
+          });
+        });
+        const list = Object.values(pkgMap).sort((a, b) => b.totalRevenue - a.totalRevenue);
+        return list.map(p => [
+          p.name,
+          p.customerName,
+          p.category,
+          String(p.unitsSold),
+          `₹${p.rate.toLocaleString()}`,
+          `₹${p.totalRevenue.toLocaleString()}`
+        ]);
+      }
+
+      case 'Package Redemption': {
+        const redemptionRows = [];
+
+        // 1. From live backend reports API if rows were returned
+        if (backendRedemptions && backendRedemptions.length > 0) {
+          backendRedemptions.forEach(r => {
+            redemptionRows.push([
+              r.clientName || 'Customer',
+              r.packageName || 'Service Package',
+              String(r.totalSessions || 1),
+              String(r.redeemedSessions || 0),
+              String(r.remainingSessions || 0),
+              toDisplayDate(r.date || 'Today'),
+              r.status || (r.remainingSessions === 0 ? 'COMPLETED' : 'ACTIVE')
+            ]);
+          });
+          return redemptionRows;
+        }
+
+        // 2. Aggregate from real orders, redemption events & master packages
+        const seenKeys = new Set();
+        const masterPackages = getPackages() || [];
+
+        // Count all redemption deductions per customer + package across entire order history
+        const redemptionsByCustPkg = {};
+        (orders || []).forEach(o => {
+          const custName = o.guest?.name || o.customer || 'Customer';
+          (o.items || []).forEach(item => {
+            const isRedeem = item.category === 'PACKAGE_REDEMPTION' ||
+                             item.itemType === 'package_redemption' ||
+                             (item.name && String(item.name).toLowerCase().startsWith('redemption:'));
+            if (isRedeem) {
+              const cleanPkg = String(item.name).replace(/^redemption:\s*/i, '').trim().toLowerCase();
+              const key = `${custName.toLowerCase()}_${cleanPkg}`;
+              const qty = Number(item.qty) || 1;
+              redemptionsByCustPkg[key] = (redemptionsByCustPkg[key] || 0) + qty;
+            }
+          });
+          (o.packageRedemptions || []).forEach(pr => {
+            const cleanPkg = String(pr.packageName || '').trim().toLowerCase();
+            const key = `${custName.toLowerCase()}_${cleanPkg}`;
+            const used = Number(pr.sessionsUsed) || 1;
+            redemptionsByCustPkg[key] = Math.max(redemptionsByCustPkg[key] || 0, used);
+          });
+        });
+
+        // A. Extract package activities (both redemptions and package sales) within filtered date range
+        filteredOrders.forEach(o => {
+          const custName = o.guest?.name || o.customer || 'Customer';
+          const orderDate = o.dateDisplay || o.date || 'Today';
+
+          (o.items || []).forEach(item => {
+            const isRedeem = item.category === 'PACKAGE_REDEMPTION' ||
+                             item.itemType === 'package_redemption' ||
+                             (item.name && String(item.name).toLowerCase().startsWith('redemption:'));
+            const isPkgSale = item.category === 'PACKAGE' || item.itemType === 'package';
+
+            if (isRedeem) {
+              const pkgName = String(item.name).replace(/^redemption:\s*/i, '').trim();
+              const key = `${custName.toLowerCase()}_${pkgName.toLowerCase()}`;
+              if (!seenKeys.has(key)) {
+                seenKeys.add(key);
+                const matchedPkg = masterPackages.find(p => p.name && p.name.trim().toLowerCase() === pkgName.toLowerCase());
+                const total = Number(matchedPkg?.totalSessions || item.totalSessions || 8);
+                const redeemed = redemptionsByCustPkg[key] || Number(item.qty || 1);
+                const remaining = Math.max(0, total - redeemed);
+                redemptionRows.push([
+                  custName,
+                  pkgName,
+                  String(total),
+                  String(redeemed),
+                  String(remaining),
+                  toDisplayDate(orderDate),
+                  remaining === 0 ? 'COMPLETED' : 'ACTIVE'
+                ]);
+              }
+            } else if (isPkgSale) {
+              const pkgName = item.name.trim();
+              const key = `${custName.toLowerCase()}_${pkgName.toLowerCase()}`;
+              if (!seenKeys.has(key)) {
+                seenKeys.add(key);
+                const matchedPkg = masterPackages.find(p => p.name && p.name.trim().toLowerCase() === pkgName.toLowerCase());
+                const total = Number(matchedPkg?.totalSessions || item.totalSessions || 1);
+                const redeemed = redemptionsByCustPkg[key] || 0;
+                const remaining = Math.max(0, total - redeemed);
+                redemptionRows.push([
+                  custName,
+                  pkgName,
+                  String(total),
+                  String(redeemed),
+                  String(remaining),
+                  toDisplayDate(orderDate),
+                  remaining === 0 ? 'COMPLETED' : 'ACTIVE'
+                ]);
+              }
+            }
+          });
+        });
+
+        // B. Customers' active / historical packages from CRM
+        const allCustomers = getCustomers();
+        allCustomers.forEach(cust => {
+          (cust.packages || []).forEach(pkg => {
+            const key = `${cust.name?.toLowerCase()}_${pkg.name?.toLowerCase()}`;
+            if (!seenKeys.has(key)) {
+              seenKeys.add(key);
+              const total = Number(pkg.totalSessions || 1);
+              const rem = Number(pkg.remainingSessions !== undefined ? pkg.remainingSessions : (total - (redemptionsByCustPkg[key] || 0)));
+              const used = Math.max(0, total - rem);
+              redemptionRows.push([
+                cust.name,
+                pkg.name,
+                String(total),
+                String(used),
+                String(rem),
+                toDisplayDate(pkg.purchaseDate || 'Today'),
+                pkg.status || (rem === 0 ? 'COMPLETED' : 'ACTIVE')
+              ]);
+            }
+          });
+        });
+
+        return redemptionRows;
       }
 
       // REAL DATA: Monthly Sale (Aggregated from real orders by month)
@@ -426,28 +645,112 @@ export default function ReportsPage() {
         ]);
       }
 
-      case 'PnL Report':
-        return [
-          ['Services & Products Sales', '₹68,200', '₹0', '₹0', '+₹68,200'],
-          ['Salon Consumables & Stock Cost', '₹0', '₹12,400', '₹0', '-₹12,400'],
-          ['Rent & Utilities', '₹0', '₹0', '₹15,000', '-₹15,000'],
-          ['Staff Salary & Benefits', '₹0', '₹0', '₹22,000', '-₹22,000'],
-          ['Repair & Housekeeping', '₹0', '₹0', '₹4,500', '-₹4,500'],
-          ['NET PROFIT (EBITDA)', '₹68,200', '₹12,400', '₹41,500', '+₹14,300'],
-        ];
+      case 'PnL Report': {
+        // 1. Calculate live POS Revenue from non-cancelled filtered orders
+        let serviceSales = 0;
+        let productSales = 0;
+        let packageSales = 0;
+
+        filteredOrders.forEach(o => {
+          if (o.status === 'Cancelled' || o.status === 'Rejected') return;
+          const items = o.items || [];
+          if (items.length > 0) {
+            items.forEach(item => {
+              const price = Number(item.price) || 0;
+              const qty = Number(item.qty) || 1;
+              const disc = Number(item.discAmount) || 0;
+              const lineTotal = Math.max(0, (price * qty) - disc);
+
+              const type = (item.itemType || '').toLowerCase();
+              const cat = (item.category || '').toUpperCase();
+              const isProd = type === 'product' || cat === 'PRODUCT';
+              const isPkg = type === 'package' || cat === 'PACKAGE';
+
+              if (isProd) {
+                productSales += lineTotal;
+              } else if (isPkg) {
+                packageSales += lineTotal;
+              } else {
+                serviceSales += lineTotal;
+              }
+            });
+          } else {
+            serviceSales += Number(o.grandTotal ?? o.subTotal ?? 0);
+          }
+        });
+
+        const totalRevenue = serviceSales + productSales + packageSales;
+
+        // 2. Classify expenses dynamically from live filtered expenses (only include real recorded expenses)
+        let totalDirectExpenses = 0;
+        let totalOverhead = 0;
+        const expenseTypeMap = {};
+
+        filteredExpenses.forEach(exp => {
+          const amt = Number(exp.amount) || 0;
+          if (amt <= 0) return;
+          const typeName = exp.expenseType?.trim() || 'General Expense';
+          const t = typeName.toLowerCase();
+          const n = (exp.notes || exp.remark || '').toLowerCase();
+          const combined = `${t} ${n}`;
+
+          const isDirect = combined.includes('consumable') || combined.includes('stock') || combined.includes('product') || combined.includes('material') || combined.includes('inventory');
+
+          if (!expenseTypeMap[typeName]) {
+            expenseTypeMap[typeName] = {
+              name: typeName,
+              amount: 0,
+              isDirect,
+            };
+          }
+          expenseTypeMap[typeName].amount += amt;
+
+          if (isDirect) {
+            totalDirectExpenses += amt;
+          } else {
+            totalOverhead += amt;
+          }
+        });
+
+        const netProfit = totalRevenue - (totalDirectExpenses + totalOverhead);
+
+        const rows = [];
+
+        // 1. Revenue row (only if there are orders or if everything is empty)
+        if (totalRevenue > 0 || Object.keys(expenseTypeMap).length === 0) {
+          rows.push([
+            'Services & Products Sales',
+            `₹${totalRevenue.toLocaleString()}`,
+            '₹0',
+            '₹0',
+            `+₹${totalRevenue.toLocaleString()}`
+          ]);
+        }
+
+        // 2. ONLY display rows for actual expenses recorded (all dummy zero rows removed)
+        Object.values(expenseTypeMap).forEach(item => {
+          rows.push([
+            item.name,
+            '₹0',
+            item.isDirect ? `₹${item.amount.toLocaleString()}` : '₹0',
+            !item.isDirect ? `₹${item.amount.toLocaleString()}` : '₹0',
+            `-₹${item.amount.toLocaleString()}`
+          ]);
+        });
+
+        // 3. Summary row
+        rows.push([
+          'NET PROFIT (EBITDA)',
+          `₹${totalRevenue.toLocaleString()}`,
+          `₹${totalDirectExpenses.toLocaleString()}`,
+          `₹${totalOverhead.toLocaleString()}`,
+          netProfit >= 0 ? `+₹${netProfit.toLocaleString()}` : `-₹${Math.abs(netProfit).toLocaleString()}`
+        ]);
+
+        return rows;
+      }
       case 'Daily Stock':
-        return [
-          ['Antiox Shampoo', 'Kinessence', '5', '0', '0', '5 ml'],
-          ['Boost Bounce', 'Wella', '6', '2', '1', '7 ml'],
-          ['Hair Mask', 'Davines', '5', '0', '1', '4 gm'],
-          ['Large Gloves', 'Disposables', '20', '50', '15', '55 units'],
-        ];
-      case 'Membership Sold':
-        return [
-          ['Bhanu', 'Silver Membership', '10-Sep-2026', '₹2,000', '10-Sep-2027', 'Active'],
-          ['Priya Sharma', 'Gold Membership', '15-Aug-2026', '₹5,000', '15-Aug-2027', 'Active'],
-          ['Rahul M', 'Silver Membership', '01-Jul-2026', '₹2,000', '01-Jul-2027', 'Active'],
-        ];
+        return [];
 
       // REAL DATA: Appointment Report (From live appointments storage)
       case 'Appointment Report': {
@@ -492,9 +795,7 @@ export default function ReportsPage() {
         });
 
         if (combined.length === 0) {
-          return [
-            ['#4', '18-Sep-2026', 'Rahul Mehra', 'Beard Trim & Styling', '₹450', 'Customer requested reschedule', 'Cancelled']
-          ];
+          return [];
         }
 
         const sorted = combined.sort((a, b) => parseDateToMs(b.dateDisplay || b.date) - parseDateToMs(a.dateDisplay || a.date));
@@ -569,12 +870,8 @@ export default function ReportsPage() {
           }
         });
 
-        // Fallback demo cash transactions if current store has no cash activities yet
         if (list.length === 0) {
-          return [
-            ['#2', '18-Sep-2026 12:34 PM', 'POS Cash Sale', 'Swati R', '+₹800', 'Cash', 'Completed'],
-            ['#EXP-003', '15-Aug-2026 10:00 AM', 'Expense (Housekeeping)', 'Petty Cash Desk', '-₹2,500', 'Cash', 'Paid'],
-          ];
+          return [];
         }
 
         list.sort((a, b) => parseDateToMs(b.rawDate) - parseDateToMs(a.rawDate));
@@ -590,11 +887,7 @@ export default function ReportsPage() {
       }
 
       default:
-        return [
-          ['REC-001', 'Operational Record A', 'General', '1', '₹1,200', '26-Aug-2026', 'Completed'],
-          ['REC-002', 'Operational Record B', 'General', '2', '₹2,400', '25-Aug-2026', 'Processed'],
-          ['REC-003', 'Operational Record C', 'General', '1', '₹850', '24-Aug-2026', 'Completed'],
-        ];
+        return [];
     }
   };
 
@@ -602,8 +895,12 @@ export default function ReportsPage() {
   const rows = getReportRows();
 
   const handleShowReport = () => {
+    setIsRefreshing(true);
     setAppliedFromDate(fromDate);
     setAppliedToDate(toDate);
+    setTimeout(() => {
+      setIsRefreshing(false);
+    }, 300);
   };
 
   const handleExportCSV = () => {
@@ -616,7 +913,7 @@ export default function ReportsPage() {
     const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + encodeURIComponent(`${header}\n${body}`);
     const link = document.createElement('a');
     link.setAttribute('href', csvContent);
-    link.setAttribute('download', `${selectedReport.replace(/\s+/g, '_')}_${appliedFromDate}_to_${appliedToDate}.csv`);
+    link.setAttribute('download', `${selectedReport.replace(/\s+/g, '_')}_${toDisplayDate(appliedFromDate)}_to_${toDisplayDate(appliedToDate)}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -682,36 +979,37 @@ export default function ReportsPage() {
           {/* Filter Controls Row */}
           <div className="flex flex-wrap items-center gap-3 text-xs">
             {/* From Date */}
-            <div className="flex items-center gap-1.5 border border-slate-200 px-3 py-1.5 rounded-lg bg-slate-50">
-              <span className="text-slate-400">From:</span>
+            <div className="flex items-center gap-2 border border-slate-300 hover:border-indigo-400 focus-within:border-indigo-600 focus-within:ring-1 focus-within:ring-indigo-600 px-3 py-1.5 rounded-xl bg-white shadow-2xs transition-all">
+              <span className="text-slate-500 font-semibold">From:</span>
               <input
-                type="text"
+                type="date"
                 value={fromDate}
                 onChange={(e) => setFromDate(e.target.value)}
-                className="bg-transparent font-medium text-slate-700 outline-none w-28"
-                placeholder="DD-MMM-YYYY"
+                className="bg-transparent font-medium text-slate-800 outline-none text-xs cursor-pointer"
               />
-              <Calendar size={13} className="text-slate-400" />
             </div>
 
             {/* To Date */}
-            <div className="flex items-center gap-1.5 border border-slate-200 px-3 py-1.5 rounded-lg bg-slate-50">
-              <span className="text-slate-400">To:</span>
+            <div className="flex items-center gap-2 border border-slate-300 hover:border-indigo-400 focus-within:border-indigo-600 focus-within:ring-1 focus-within:ring-indigo-600 px-3 py-1.5 rounded-xl bg-white shadow-2xs transition-all">
+              <span className="text-slate-500 font-semibold">To:</span>
               <input
-                type="text"
+                type="date"
                 value={toDate}
                 onChange={(e) => setToDate(e.target.value)}
-                className="bg-transparent font-medium text-slate-700 outline-none w-28"
-                placeholder="DD-MMM-YYYY"
+                className="bg-transparent font-medium text-slate-800 outline-none text-xs cursor-pointer"
               />
-              <Calendar size={13} className="text-slate-400" />
             </div>
 
             <button 
+              type="button"
               onClick={handleShowReport}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded-lg font-bold shadow-xs transition-colors cursor-pointer"
+              disabled={isRefreshing}
+              className={`bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white px-5 py-2 rounded-xl font-bold shadow-xs transition-all cursor-pointer flex items-center gap-1.5 ${
+                isRefreshing ? 'opacity-80 scale-95' : ''
+              }`}
             >
-              Show Report
+              <Filter size={13} className={isRefreshing ? 'animate-spin' : ''} />
+              <span>{isRefreshing ? 'Updating...' : 'Show Report'}</span>
             </button>
           </div>
         </div>
@@ -724,7 +1022,7 @@ export default function ReportsPage() {
                 <Inbox size={42} className="mx-auto mb-2.5 text-slate-300" />
                 <p className="font-bold text-slate-600 text-sm">No records found for {selectedReport}</p>
                 <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
-                  Orders billed in the POS Quick Sale module for this date range ({appliedFromDate} → {appliedToDate}) will appear here live.
+                  Orders billed in the POS Quick Sale module for this date range ({toDisplayDate(appliedFromDate)} → {toDisplayDate(appliedToDate)}) will appear here live.
                 </p>
               </div>
             ) : (

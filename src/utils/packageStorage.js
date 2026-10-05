@@ -1,119 +1,132 @@
 import { getActiveTenantId } from './saasStorage';
+import { packageApi } from '../api/client';
 
-export const initialPackages = [
-  { 
-    id: 'pkg1', 
-    name: 'Hair Care Package (180 Days)', 
-    price: 4999, 
-    validityDays: 180, 
-    renewalReminderDays: 15, 
-    services: '4 Hair Spas, 2 Hair Cuts, 1 Color Touch-up', 
-    header: 'Hair Packages' 
-  },
-  { 
-    id: 'pkg2', 
-    name: 'Bridal Glow Package', 
-    price: 14999, 
-    validityDays: 90, 
-    renewalReminderDays: 7, 
-    services: 'Pre-bridal cleanup, 2 Facials, Mani & Pedi, Makeup', 
-    header: 'Bridal Packages' 
-  },
-  { 
-    id: 'pkg3', 
-    name: 'Pre-Bridal Glow Treatment', 
-    price: 7999, 
-    validityDays: 60, 
-    renewalReminderDays: 7, 
-    services: 'Body polishing, Fruit cleanup, Hair spa', 
-    header: 'Bridal Packages' 
-  },
-];
+/**
+ * PURE DATABASE-ONLY PACKAGE STORAGE
+ * Packages are loaded from PostgreSQL via packageApi.
+ * Zero package records are stored in browser localStorage.
+ */
 
-export const getPackageStorageKey = () => {
-  const tenantId = getActiveTenantId();
-  return `respark_packages_${tenantId}`;
+let inMemoryPackages = [];
+let hasFetchedPackages = false;
+
+export const purgeLocalPackages = () => {
+  try {
+    const keysToRemove = [];
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('respark_packages_')) {
+        keysToRemove.push(k);
+      }
+    }
+    keysToRemove.forEach((key) => {
+      try {
+        localStorage.removeItem(key);
+      } catch (e) {}
+    });
+  } catch (err) {}
+};
+
+purgeLocalPackages();
+
+export const mapBackendPackageToFrontend = (pkg) => {
+  let totalSessions = 1;
+  if (pkg.totalSessions && !isNaN(Number(pkg.totalSessions))) {
+    totalSessions = Number(pkg.totalSessions);
+  } else if (typeof pkg.services === 'object' && pkg.services !== null && pkg.services.totalSessions) {
+    totalSessions = Number(pkg.services.totalSessions);
+  } else if (typeof pkg.services === 'string') {
+    try {
+      const parsed = JSON.parse(pkg.services);
+      if (parsed?.totalSessions) totalSessions = Number(parsed.totalSessions);
+    } catch (e) {}
+  }
+
+  let servicesText = 'Package Services';
+  if (typeof pkg.services === 'string') {
+    try {
+      const parsed = JSON.parse(pkg.services);
+      if (parsed && typeof parsed === 'object') {
+        servicesText = parsed.text || parsed.breakdown || pkg.services;
+      } else {
+        servicesText = pkg.services;
+      }
+    } catch (e) {
+      servicesText = pkg.services;
+    }
+  } else if (typeof pkg.services === 'object' && pkg.services !== null) {
+    servicesText = pkg.services.text || pkg.services.breakdown || (Array.isArray(pkg.services) ? pkg.services.join(', ') : 'Package Services');
+  } else if (Array.isArray(pkg.items)) {
+    servicesText = pkg.items.map(it => it.service?.name).filter(Boolean).join(', ');
+  } else if (pkg.description) {
+    servicesText = pkg.description;
+  }
+
+  const cat = pkg.header || pkg.category || pkg.description || 'Special Packages';
+
+  return {
+    id: pkg.id,
+    name: pkg.name,
+    price: Number(pkg.price || 0),
+    validityDays: Number(pkg.validityDays || 180),
+    renewalReminderDays: Number(pkg.renewalReminderDays || 15),
+    totalSessions: totalSessions || 1,
+    services: servicesText || 'Package Services',
+    header: cat,
+    category: cat,
+    description: pkg.description || cat,
+    isActive: pkg.isActive !== false,
+  };
+};
+
+export const fetchPackagesFromBackend = async () => {
+  try {
+    const res = await packageApi.getPackages({ limit: 100 });
+    const items = Array.isArray(res?.data?.items) ? res.data.items : (Array.isArray(res?.data) ? res.data : []);
+    if (items.length > 0) {
+      inMemoryPackages = items.filter(pkg => pkg.isActive !== false).map(mapBackendPackageToFrontend);
+      hasFetchedPackages = true;
+      window.dispatchEvent(new Event('resparkPackagesUpdated'));
+      return inMemoryPackages;
+    }
+  } catch (err) {
+    console.warn('Backend packages fetch failed:', err);
+  }
+  return inMemoryPackages;
 };
 
 export const getPackages = () => {
-  try {
-    const tenantId = getActiveTenantId();
-    const storageKey = getPackageStorageKey();
-    let data = localStorage.getItem(storageKey);
-
-    if (data === null || data === undefined) {
-      const initial = tenantId === 'tenant_glamour' ? initialPackages : [];
-      localStorage.setItem(storageKey, JSON.stringify(initial));
-      return initial;
-    }
-
-    let parsed = JSON.parse(data);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-
-    // For custom salons: filter out default mock packages
-    if (tenantId !== 'tenant_glamour') {
-      const mockIds = new Set(initialPackages.map(pkg => String(pkg.id)));
-      const customOnly = parsed.filter(pkg => {
-        const pid = String(pkg.id);
-        const isUserCreated = /^pkg_\d{10,}$/.test(pid) || /^\d{10,}$/.test(pid);
-        if (isUserCreated) return true;
-        const isMock = mockIds.has(pid) || /^pkg_?\d{1,2}$/i.test(pid);
-        return !isMock;
-      });
-      if (customOnly.length !== parsed.length) {
-        localStorage.setItem(storageKey, JSON.stringify(customOnly));
-        parsed = customOnly;
-      }
-    }
-
-    return parsed;
-  } catch (err) {
-    return [];
+  if (!hasFetchedPackages) {
+    fetchPackagesFromBackend();
   }
+  return [...inMemoryPackages];
 };
 
 export const savePackages = (packages) => {
-  try {
-    const storageKey = getPackageStorageKey();
-    localStorage.setItem(storageKey, JSON.stringify(packages));
-    window.dispatchEvent(new Event('resparkPackagesUpdated'));
-  } catch (err) {
-    console.error('Failed to save packages:', err);
-  }
+  inMemoryPackages = Array.isArray(packages) ? packages : [];
+  window.dispatchEvent(new Event('resparkPackagesUpdated'));
 };
 
 export const createPackage = (pkgData) => {
-  try {
-    const current = getPackages();
-    const newPkg = {
-      id: 'pkg_' + Date.now(),
-      name: pkgData.name.trim(),
-      price: parseFloat(pkgData.price) || 0,
-      validityDays: parseInt(pkgData.validityDays) || 180,
-      renewalReminderDays: parseInt(pkgData.renewalReminderDays) || 15,
-      services: pkgData.services ? pkgData.services.trim() : '',
-      header: pkgData.header ? pkgData.header.trim() : 'Special Packages'
-    };
+  const newPkg = {
+    id: 'pkg_' + Date.now(),
+    name: pkgData.name.trim(),
+    price: parseFloat(pkgData.price) || 0,
+    validityDays: parseInt(pkgData.validityDays, 10) || 180,
+    renewalReminderDays: parseInt(pkgData.renewalReminderDays, 10) || 15,
+    totalSessions: parseInt(pkgData.totalSessions, 10) || 1,
+    services: pkgData.services ? pkgData.services.trim() : '',
+    header: pkgData.header ? pkgData.header.trim() : 'Special Packages',
+    isActive: true,
+  };
 
-    const updated = [...current, newPkg];
-    savePackages(updated);
-    return newPkg;
-  } catch (err) {
-    console.error('Failed to create package:', err);
-    return null;
-  }
+  inMemoryPackages = [...inMemoryPackages, newPkg];
+  window.dispatchEvent(new Event('resparkPackagesUpdated'));
+  return newPkg;
 };
 
 export const deletePackage = (packageId) => {
-  try {
-    const current = getPackages();
-    const updated = current.filter(p => p.id !== packageId);
-    savePackages(updated);
-    return updated;
-  } catch (err) {
-    console.error('Failed to delete package:', err);
-    return [];
-  }
+  inMemoryPackages = inMemoryPackages.filter(p => p.id !== packageId);
+  window.dispatchEvent(new Event('resparkPackagesUpdated'));
+  return inMemoryPackages;
 };

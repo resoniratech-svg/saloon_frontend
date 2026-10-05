@@ -376,7 +376,7 @@ const POSUpdateOrderModal = ({ isOpen, onClose, order, onOrderUpdated, onViewBil
     if (onViewBill) onViewBill(currentOrderData);
   };
 
-  const actionButtonLabels = ['Add Service', 'Add Product', 'Add Disposables', 'Add Package', 'Add Membership'];
+  const actionButtonLabels = ['Add Service', 'Add Product', 'Add Disposables', 'Add Package'];
 
   if (!isOpen || !order) return null;
 

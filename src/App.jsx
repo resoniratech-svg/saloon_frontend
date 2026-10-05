@@ -81,11 +81,7 @@ function App() {
               <InventoryPage />
             </RoleGuard>
           } />
-          <Route path="disposables" element={
-            <RoleGuard allowedRoles={cashierAllowed} moduleKey="disposables">
-              <DisposablesPage />
-            </RoleGuard>
-          } />
+          <Route path="disposables" element={<Navigate to="/master-bo?tab=Disposables" replace />} />
           <Route path="trends" element={
             <RoleGuard allowedRoles={cashierAllowed} moduleKey="trends">
               <TrendsPage />
@@ -128,7 +124,7 @@ function App() {
               <ExpensesPage />
             </RoleGuard>
           } />
-          <Route path="payroll" element={<Navigate to="/staff-management?tab=salary" replace />} />
+          <Route path="payroll" element={<Navigate to="/staff-management" replace />} />
           <Route path="enquiries" element={<Navigate to="/pos" replace />} />
           <Route path="whatsapp" element={<Navigate to="/pos" replace />} />
         </Route>

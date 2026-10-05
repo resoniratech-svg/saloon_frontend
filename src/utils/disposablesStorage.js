@@ -1,4 +1,5 @@
 import { getActiveTenantId } from './saasStorage';
+import { disposableApi } from '../api/client';
 
 export const initialDisposables = [
   {
@@ -276,70 +277,73 @@ const getInwardKey = () => {
   return `respark_disp_inward_${tenantId}`;
 };
 
-export const getDisposables = () => {
-  try {
-    const key = getStorageKey();
-    const tenantId = getActiveTenantId();
-    const isCustomTenant = tenantId !== 'tenant_glamour';
-    const data = localStorage.getItem(key);
-    let list = isCustomTenant ? [] : initialDisposables;
-    if (data) {
-      const parsed = JSON.parse(data);
-      if (Array.isArray(parsed)) {
-        list = parsed;
-      }
-    }
+let inMemoryDisposables = [];
+let hasFetchedDisposables = false;
+let inMemoryInward = [];
+let inMemoryConsumption = [];
+let inMemoryWastage = [];
 
-    if (isCustomTenant && list.length > 0) {
-      const mockIds = new Set(initialDisposables.map(d => String(d.id)));
-      // Only filter out the built-in mock items (disp_1 through disp_15), never custom user items
-      const customOnly = list.filter(d => {
-        const did = String(d.id || '');
-        const isMock = mockIds.has(did) || /^disp_[1-9]\d?$/i.test(did);
-        return !isMock;
-      });
-      if (customOnly.length !== list.length) {
-        localStorage.setItem(key, JSON.stringify(customOnly));
-        list = customOnly;
+export const purgeLocalDisposables = () => {
+  try {
+    const keysToRemove = [];
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('respark_disp_') || k.startsWith('respark_disposables_'))) {
+        keysToRemove.push(k);
       }
     }
-    // Enrich items with multi-unit pricing if missing
-    return list.map(item => {
-      const packPrice = Number(item.packPrice) || (item.unit === 'Pack' ? Number(item.unitCost) : Number(item.unitCost || 250));
-      const ppu = Number(item.piecesPerUnit) || (
-        item.name.includes('200') ? 200 :
-        item.name.includes('150') ? 150 :
-        item.name.includes('100') ? 100 :
-        item.name.includes('50') ? 50 :
-        item.name.includes('20') ? 20 :
-        item.name.includes('5') ? 5 : 50
-      );
-      const piecePrice = Number(item.piecePrice) || Math.max(1, Math.round(packPrice / ppu) || 5);
-      const boxPrice = Number(item.boxPrice) || (item.unit === 'Box' ? Number(item.unitCost) : Math.round(packPrice * 4.5));
-      return {
-        ...item,
-        packPrice,
-        boxPrice,
-        piecesPerUnit: ppu,
-        piecePrice,
-      };
+    keysToRemove.forEach((key) => {
+      try {
+        localStorage.removeItem(key);
+      } catch (e) {}
     });
+  } catch (err) {}
+};
+
+purgeLocalDisposables();
+
+export const fetchDisposablesFromBackend = async () => {
+  try {
+    const res = await disposableApi.getDisposables({ limit: 100 });
+    const items = Array.isArray(res?.data?.items) ? res.data.items : (Array.isArray(res?.data) ? res.data : []);
+    if (items.length > 0) {
+      inMemoryDisposables = items.map(d => ({
+        id: d.id,
+        name: d.name,
+        sku: d.sku || 'DSP-01',
+        category: d.category || 'Salon Supplies',
+        unit: d.unit || 'Pack',
+        unitCost: Number(d.costPrice || d.unitCost || 0),
+        packPrice: Number(d.packPrice || d.costPrice || 0),
+        boxPrice: Number(d.boxPrice || 0),
+        piecesPerUnit: Number(d.piecesPerUnit || 1),
+        piecePrice: Number(d.piecePrice || 0),
+        stock: Number(d.currentStock || d.stock || 0),
+        minStock: Number(d.minStock || 5),
+        supplier: d.supplier || 'Vendor',
+        status: (Number(d.currentStock || d.stock || 0) <= 0) ? 'Out of Stock' : 'In Stock'
+      }));
+      hasFetchedDisposables = true;
+      window.dispatchEvent(new Event('disposablesUpdated'));
+      return inMemoryDisposables;
+    }
   } catch (e) {
-    console.error('Error loading disposables:', e);
-    return initialDisposables;
+    console.warn('Backend disposables fetch failed:', e);
   }
+  return inMemoryDisposables;
+};
+
+export const getDisposables = () => {
+  if (!hasFetchedDisposables) {
+    fetchDisposablesFromBackend();
+  }
+  return [...inMemoryDisposables];
 };
 
 export const saveDisposables = (list) => {
-  try {
-    const key = getStorageKey();
-    localStorage.setItem(key, JSON.stringify(list));
-    window.dispatchEvent(new Event('disposablesUpdated'));
-    return true;
-  } catch (e) {
-    console.error('Error saving disposables:', e);
-    return false;
-  }
+  inMemoryDisposables = Array.isArray(list) ? list : [];
+  window.dispatchEvent(new Event('disposablesUpdated'));
+  return true;
 };
 
 export const addDisposableItem = (item) => {
@@ -424,19 +428,12 @@ export const recordInwardStock = ({ itemId, quantity, supplier, invoiceNo, notes
     date: new Date().toLocaleString()
   };
   logs.unshift(entry);
-  localStorage.setItem(inwardKey, JSON.stringify(logs));
   window.dispatchEvent(new Event('disposablesInwardUpdated'));
-
   return entry;
 };
 
 export const getInwardLogs = () => {
-  try {
-    const data = localStorage.getItem(getInwardKey());
-    return data ? JSON.parse(data) : [];
-  } catch (e) {
-    return [];
-  }
+  return [...inMemoryInward];
 };
 
 // ----------------- Internal Consumption (Staff Check-out) -----------------
@@ -449,7 +446,6 @@ export const recordConsumption = ({ itemId, quantity, unit, unitCost, totalCost,
   const usedQty = Number(quantity) || 1;
   const usedUnit = unit || item.unit || 'Pack';
 
-  // Compute proportional stock deduction based on unit
   let stockDeduction = usedQty;
   if (usedUnit === 'Pieces' || usedUnit === 'Piece' || usedUnit === 'Pcs') {
     const ppu = Number(item.piecesPerUnit) || 50;
@@ -467,8 +463,6 @@ export const recordConsumption = ({ itemId, quantity, unit, unitCost, totalCost,
   };
   saveDisposables(list);
 
-  const cKey = getConsumptionKey();
-  const logs = getConsumptionLogs();
   const effectiveUnitCost = unitCost !== undefined ? Number(unitCost) : getDisposablePriceForUnit(item, usedUnit);
   const effectiveTotalCost = totalCost !== undefined ? Number(totalCost) : (effectiveUnitCost * usedQty);
 
@@ -486,61 +480,14 @@ export const recordConsumption = ({ itemId, quantity, unit, unitCost, totalCost,
     notes: notes || '',
     date: new Date().toLocaleString()
   };
-  logs.unshift(entry);
-  localStorage.setItem(cKey, JSON.stringify(logs));
+  inMemoryConsumption.unshift(entry);
   window.dispatchEvent(new Event('disposablesConsumptionUpdated'));
 
   return entry;
 };
 
 export const getConsumptionLogs = () => {
-  try {
-    const data = localStorage.getItem(getConsumptionKey());
-    if (data) return JSON.parse(data);
-    // Initial sample consumption logs for realistic demo
-    const sample = [
-      {
-        id: 'csm_1',
-        itemName: 'Disposable Cutting Capes (Pack of 50)',
-        category: 'Hair & Styling',
-        quantity: 2,
-        unit: 'Pack',
-        unitCost: 250,
-        totalCost: 500,
-        staffName: 'Respark Trial',
-        purpose: 'Hair Cut & Styling Service',
-        date: new Date(Date.now() - 3600000 * 2).toLocaleString()
-      },
-      {
-        id: 'csm_2',
-        itemName: 'Black Nitrile Gloves Large (Box of 100)',
-        category: 'Hair & Styling',
-        quantity: 1,
-        unit: 'Box',
-        unitCost: 420,
-        totalCost: 420,
-        staffName: 'Swati R',
-        purpose: 'Hair Color Highlights Station',
-        date: new Date(Date.now() - 3600000 * 4).toLocaleString()
-      },
-      {
-        id: 'csm_3',
-        itemName: '100% Pure Cotton Facial Rounds (Pack of 200)',
-        category: 'Skin & Facial',
-        quantity: 1,
-        unit: 'Pack',
-        unitCost: 110,
-        totalCost: 110,
-        staffName: 'Sohum K',
-        purpose: 'Hydra Deep Facial Treatment',
-        date: new Date(Date.now() - 3600000 * 6).toLocaleString()
-      }
-    ];
-    localStorage.setItem(getConsumptionKey(), JSON.stringify(sample));
-    return sample;
-  } catch (e) {
-    return [];
-  }
+  return [...inMemoryConsumption];
 };
 
 // ----------------- Wastage & Damage -----------------
@@ -560,8 +507,6 @@ export const recordWastage = ({ itemId, quantity, reason, notes }) => {
   };
   saveDisposables(list);
 
-  const wKey = getWastageKey();
-  const logs = getWastageLogs();
   const entry = {
     id: `wst_${Date.now()}`,
     itemId,
@@ -575,33 +520,12 @@ export const recordWastage = ({ itemId, quantity, reason, notes }) => {
     notes: notes || '',
     date: new Date().toLocaleString()
   };
-  logs.unshift(entry);
-  localStorage.setItem(wKey, JSON.stringify(logs));
+  inMemoryWastage.unshift(entry);
   window.dispatchEvent(new Event('disposablesWastageUpdated'));
 
   return entry;
 };
 
 export const getWastageLogs = () => {
-  try {
-    const data = localStorage.getItem(getWastageKey());
-    if (data) return JSON.parse(data);
-    const sample = [
-      {
-        id: 'wst_1',
-        itemName: 'Black Nitrile Gloves Large (Box of 100)',
-        category: 'Hair & Styling',
-        quantity: 1,
-        unit: 'Box',
-        unitCost: 420,
-        totalLoss: 420,
-        reason: 'Water spill damage in storage cabinet',
-        date: new Date(Date.now() - 86400000).toLocaleString()
-      }
-    ];
-    localStorage.setItem(getWastageKey(), JSON.stringify(sample));
-    return sample;
-  } catch (e) {
-    return [];
-  }
+  return [...inMemoryWastage];
 };

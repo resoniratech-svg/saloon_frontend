@@ -1,105 +1,79 @@
-import { getActiveTenantId, getTenants } from './saasStorage';
+import { getActiveTenantId } from './saasStorage';
+import { cashierApi } from '../api/client';
 
-export const initialCashiers = {
-  tenant_glamour: [
-    {
-      id: 'c_glamour_1',
-      name: 'Pooja Sharma',
-      email: 'pooja.cashier@saloon.com',
-      username: 'cashier',
-      password: 'password123',
-      phone: '+91 9823412350',
-      branchName: 'Main Counter',
-      active: true,
-      tenantId: 'tenant_glamour',
-      createdAt: '15-Jan-2026'
-    }
-  ],
-  tenant_naturals: [
-    {
-      id: 'c_naturals_1',
-      name: 'Kavita Singh',
-      email: 'kavita.cashier@naturalssalon.in',
-      username: 'cashier',
-      password: 'password123',
-      phone: '+91 9845011223',
-      branchName: 'Front Desk 1',
-      active: true,
-      tenantId: 'tenant_naturals',
-      createdAt: '01-Feb-2026'
-    }
-  ],
-  tenant_enrich: [
-    {
-      id: 'c_enrich_1',
-      name: 'Priya Nair',
-      email: 'priya.cashier@enrichstudio.com',
-      username: 'cashier',
-      password: 'password123',
-      phone: '+91 9890188990',
-      branchName: 'Billing Counter',
-      active: true,
-      tenantId: 'tenant_enrich',
-      createdAt: '01-Mar-2026'
-    }
-  ]
-};
+/**
+ * PURE DATABASE-ONLY CASHIER STORAGE
+ * Cashiers are retrieved from PostgreSQL via cashierApi.
+ * Zero cashiers are stored in browser localStorage.
+ */
 
-export const getCashierStorageKey = () => {
-  const tenantId = getActiveTenantId();
-  return `respark_cashiers_${tenantId}`;
-};
+let inMemoryCashiers = [];
+let hasFetchedCashiers = false;
 
-export const getCashiersForTenant = (tenantId) => {
+export const purgeLocalCashiers = () => {
   try {
-    const key = `respark_cashiers_${tenantId}`;
-    const data = localStorage.getItem(key);
-    if (!data) {
-      // Only predefined demo salons have initial mock cashiers. Custom salons start with 0 cashiers.
-      const defaults = initialCashiers[tenantId] || [];
-      localStorage.setItem(key, JSON.stringify(defaults));
-      return defaults;
-    }
-    const parsed = JSON.parse(data);
-    if (Array.isArray(parsed)) {
-      // Auto-clean: Remove auto-generated dummy cashier for custom salons
-      if (!initialCashiers[tenantId]) {
-        const cleaned = parsed.filter(c => !(
-          (c.email && c.email.includes('cashier@tenant_')) ||
-          (c.phone === '+91 9800000000' && c.name === 'Front Desk Cashier')
-        ));
-        if (cleaned.length !== parsed.length) {
-          localStorage.setItem(key, JSON.stringify(cleaned));
-          return cleaned;
-        }
+    const keysToRemove = [];
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('respark_cashiers_') || k.startsWith('respark_cashier_'))) {
+        keysToRemove.push(k);
       }
-      return parsed;
     }
-    return [];
+    keysToRemove.forEach((key) => {
+      try {
+        localStorage.removeItem(key);
+      } catch (e) {}
+    });
+  } catch (err) {}
+};
+
+purgeLocalCashiers();
+
+export const mapBackendCashierToFrontend = (c) => ({
+  id: c.id,
+  name: c.name || `${c.firstName || ''} ${c.lastName || ''}`.trim() || 'Cashier',
+  email: c.email || '',
+  username: c.username || '',
+  phone: c.phone || c.mobile || '',
+  branchName: c.branchName || 'Main Counter',
+  active: c.active !== undefined ? c.active : (c.status === 'ACTIVE'),
+  tenantId: c.tenantId,
+  createdAt: c.createdAt ? new Date(c.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Recent'
+});
+
+export const fetchCashiersFromBackend = async () => {
+  try {
+    const res = await cashierApi.getCashiers();
+    const items = Array.isArray(res?.data?.cashiers) ? res.data.cashiers : (Array.isArray(res?.data) ? res.data : []);
+    if (items.length > 0) {
+      inMemoryCashiers = items.map(mapBackendCashierToFrontend);
+      hasFetchedCashiers = true;
+      window.dispatchEvent(new Event('cashiersUpdated'));
+      return inMemoryCashiers;
+    }
   } catch (err) {
-    console.error('Failed to get cashiers for tenant', err);
-    return [];
+    console.warn('Backend cashiers fetch failed:', err);
   }
+  return inMemoryCashiers;
 };
 
 export const getMasterCashiers = () => {
-  const tenantId = getActiveTenantId();
-  return getCashiersForTenant(tenantId);
+  if (!hasFetchedCashiers) {
+    fetchCashiersFromBackend();
+  }
+  return [...inMemoryCashiers];
+};
+
+export const getCashiersForTenant = () => {
+  return getMasterCashiers();
 };
 
 export const saveMasterCashiers = (cashiers) => {
-  try {
-    const key = getCashierStorageKey();
-    localStorage.setItem(key, JSON.stringify(cashiers));
-    window.dispatchEvent(new Event('cashiersUpdated'));
-  } catch (err) {
-    console.error('Failed to save cashiers', err);
-  }
+  inMemoryCashiers = Array.isArray(cashiers) ? cashiers : [];
+  window.dispatchEvent(new Event('cashiersUpdated'));
 };
 
 export const createCashier = (cashierData) => {
-  const tenantId = getActiveTenantId();
-  const current = getMasterCashiers();
   const newCashier = {
     id: 'c_' + Date.now(),
     name: cashierData.name.trim(),
@@ -109,49 +83,21 @@ export const createCashier = (cashierData) => {
     phone: cashierData.phone || '',
     branchName: cashierData.branchName || 'Main Counter',
     active: cashierData.active !== undefined ? cashierData.active : true,
-    tenantId,
     createdAt: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
   };
-  const updated = [newCashier, ...current];
-  saveMasterCashiers(updated);
+  inMemoryCashiers = [newCashier, ...inMemoryCashiers];
+  window.dispatchEvent(new Event('cashiersUpdated'));
   return newCashier;
 };
 
 export const updateCashier = (cashierId, updatedFields) => {
-  const current = getMasterCashiers();
-  const updated = current.map(c => {
-    if (c.id === cashierId) {
-      return { ...c, ...updatedFields };
-    }
-    return c;
-  });
-  saveMasterCashiers(updated);
-  return updated;
+  inMemoryCashiers = inMemoryCashiers.map(c => c.id === cashierId ? { ...c, ...updatedFields } : c);
+  window.dispatchEvent(new Event('cashiersUpdated'));
+  return inMemoryCashiers;
 };
 
 export const deleteCashier = (cashierId) => {
-  const current = getMasterCashiers();
-  const updated = current.filter(c => c.id !== cashierId);
-  saveMasterCashiers(updated);
-  return updated;
-};
-
-// Check if credentials match any active cashier across all registered salons
-export const findCashierByCredentials = (cleanUser, cleanPass) => {
-  const tenants = getTenants();
-  for (const tenant of tenants) {
-    const cashiers = getCashiersForTenant(tenant.id);
-    const matched = cashiers.find(c => {
-      const uMatch = c.username && c.username.toLowerCase() === cleanUser.toLowerCase();
-      const eMatch = c.email && c.email.toLowerCase() === cleanUser.toLowerCase();
-      const pMatch = c.phone && c.phone.replace(/\D/g, '') === cleanUser.replace(/\D/g, '');
-      const passMatch = c.password === cleanPass;
-      return (uMatch || eMatch || pMatch) && passMatch;
-    });
-
-    if (matched) {
-      return { tenant, cashier: matched };
-    }
-  }
-  return null;
+  inMemoryCashiers = inMemoryCashiers.filter(c => c.id !== cashierId);
+  window.dispatchEvent(new Event('cashiersUpdated'));
+  return inMemoryCashiers;
 };

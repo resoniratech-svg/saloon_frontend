@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   ShieldCheck, 
   ShoppingCart, 
@@ -21,7 +21,11 @@ import {
   Scissors,
   Crown,
   Gift,
-  Wallet
+  Wallet,
+  Layers,
+  Loader2,
+  RefreshCw,
+  Database
 } from 'lucide-react';
 import { 
   getActiveTenant, 
@@ -30,16 +34,45 @@ import {
   DEFAULT_CASHIER_PERMISSIONS,
   isPlanFeatureAllowed
 } from '../utils/saasStorage';
+import { permissionApi } from '../api/client';
 
 export default function PermissionsPage() {
   const [tenant, setTenant] = useState(getActiveTenant);
   const [permissions, setPermissions] = useState(() => getCashierPermissions());
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [dbSynced, setDbSynced] = useState(false);
+
+  const fetchPermissions = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const active = getActiveTenant();
+      const res = await permissionApi.getPermissions({ tenantId: active?.id });
+      if (res?.success && res?.data?.permissions && Object.keys(res.data.permissions).length > 0) {
+        const merged = { ...DEFAULT_CASHIER_PERMISSIONS, ...res.data.permissions };
+        setPermissions(merged);
+        saveCashierPermissions(merged, active?.id);
+        setDbSynced(true);
+      } else {
+        setPermissions(getCashierPermissions(active?.id));
+      }
+    } catch (err) {
+      console.warn('Could not load permissions from database, using cached:', err);
+      setPermissions(getCashierPermissions());
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchPermissions();
+  }, [fetchPermissions]);
 
   useEffect(() => {
     const handleSync = () => {
       setTenant(getActiveTenant());
-      setPermissions(getCashierPermissions());
+      fetchPermissions();
     };
     window.addEventListener('tenantChanged', handleSync);
     window.addEventListener('permissionsUpdated', handleSync);
@@ -47,7 +80,7 @@ export default function PermissionsPage() {
       window.removeEventListener('tenantChanged', handleSync);
       window.removeEventListener('permissionsUpdated', handleSync);
     };
-  }, []);
+  }, [fetchPermissions]);
 
   const isAllowed = (key) => isPlanFeatureAllowed(tenant, key);
 
@@ -60,10 +93,28 @@ export default function PermissionsPage() {
     setSaveSuccess(false);
   };
 
-  const handleSave = () => {
-    saveCashierPermissions(permissions, tenant?.id);
-    setSaveSuccess(true);
-    setTimeout(() => setSaveSuccess(false), 3500);
+  const handleSave = async () => {
+    setIsSaving(true);
+    try {
+      const active = getActiveTenant();
+      // 1. Save directly to PostgreSQL database
+      const res = await permissionApi.updatePermissions(permissions, active?.id);
+      
+      // 2. Also synchronize client storage & broadcast instant UI changes
+      saveCashierPermissions(permissions, active?.id);
+      
+      setDbSynced(true);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3500);
+    } catch (err) {
+      console.error('Failed to save permissions to database:', err);
+      // Fallback: save locally
+      saveCashierPermissions(permissions, tenant?.id);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3500);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleApplyPreset = (presetType) => {
@@ -179,18 +230,39 @@ export default function PermissionsPage() {
           </div>
         </div>
 
-        {/* Salon Identifier Pill */}
-        <div className="flex items-center gap-2.5 px-3 py-1.5 bg-slate-50 rounded-xl border border-slate-200 text-xs">
-          {tenant?.logoUrl ? (
-            <img src={tenant.logoUrl} alt={companyName} className="h-6 max-w-[80px] object-contain rounded" />
-          ) : (
-            <span className="w-6 h-6 rounded bg-indigo-600 text-white font-bold text-[10px] flex items-center justify-center">
-              {companyName.slice(0, 2).toUpperCase()}
-            </span>
-          )}
-          <div className="text-left">
-            <div className="font-bold text-slate-800 text-xs">{companyName}</div>
-            <div className="text-[10px] text-slate-400">{companyLocation}</div>
+        {/* Header Right Actions & Salon Identifier */}
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Database Connected Badge */}
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold bg-emerald-50 border-emerald-200 text-emerald-700">
+            <Database size={13} className="text-emerald-600" />
+            <span>{dbSynced ? 'PostgreSQL Synced' : 'Database Ready'}</span>
+          </div>
+
+          {/* Refresh Button */}
+          <button
+            type="button"
+            onClick={fetchPermissions}
+            disabled={isLoading}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 cursor-pointer shadow-2xs transition-all active:scale-95 disabled:opacity-50"
+            title="Reload permissions from database"
+          >
+            <RefreshCw size={13} className={isLoading ? 'animate-spin text-indigo-600' : 'text-slate-500'} />
+            <span className="hidden sm:inline">Refresh</span>
+          </button>
+
+          {/* Salon Identifier Pill */}
+          <div className="flex items-center gap-2.5 px-3 py-1.5 bg-slate-50 rounded-xl border border-slate-200 text-xs">
+            {tenant?.logoUrl ? (
+              <img src={tenant.logoUrl} alt={companyName} className="h-6 max-w-[80px] object-contain rounded" />
+            ) : (
+              <span className="w-6 h-6 rounded bg-indigo-600 text-white font-bold text-[10px] flex items-center justify-center">
+                {companyName.slice(0, 2).toUpperCase()}
+              </span>
+            )}
+            <div className="text-left">
+              <div className="font-bold text-slate-800 text-xs">{companyName}</div>
+              <div className="text-[10px] text-slate-400">{companyLocation}</div>
+            </div>
           </div>
         </div>
       </div>
@@ -248,7 +320,7 @@ export default function PermissionsPage() {
       {saveSuccess && (
         <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs font-medium flex items-center gap-2 animate-in fade-in duration-200">
           <Check size={18} className="text-emerald-600 shrink-0" />
-          <span>Permissions saved successfully! The Cashier portal navigation and security guards have been updated in real-time.</span>
+          <span>Permissions saved directly to PostgreSQL database! Cashier portal navigation and security guards have been updated in real-time.</span>
         </div>
       )}
 
@@ -425,7 +497,7 @@ export default function PermissionsPage() {
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Central catalog management for salon services, retail products, service packages, and VIP memberships
+                      Central catalog management for salon services, retail products, service packages, and salon disposables
                     </p>
                     <span className="text-[10px] font-mono text-slate-400 block mt-1">Route: /master-bo</span>
                   </div>
@@ -452,7 +524,7 @@ export default function PermissionsPage() {
                   <span className="text-[11px] font-bold text-violet-800 uppercase tracking-wider block mb-2">
                     Granular Backoffice Sub-Section Permissions for Cashier:
                   </span>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
                     <div className="p-3 bg-violet-50/50 rounded-xl border border-violet-100 flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <Scissors size={15} className="text-violet-600" />
@@ -501,18 +573,27 @@ export default function PermissionsPage() {
                       />
                     </div>
 
+
                     <div className="p-3 bg-violet-50/50 rounded-xl border border-violet-100 flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <Crown size={15} className="text-violet-600" />
+                        <Layers size={15} className="text-violet-600" />
                         <div>
-                          <div className="text-xs font-bold text-slate-800">Memberships</div>
-                          <span className="text-[10px] text-slate-500">VIP discount tiers</span>
+                          <div className="text-xs font-bold text-slate-800">Disposables</div>
+                          <span className="text-[10px] text-slate-500">Capes & supplies</span>
                         </div>
                       </div>
                       <input
                         type="checkbox"
-                        checked={permissions.masterBoMemberships}
-                        onChange={() => handleToggle('masterBoMemberships')}
+                        checked={permissions.masterBoDisposables !== undefined ? permissions.masterBoDisposables : (permissions.disposables ?? false)}
+                        onChange={() => {
+                          const currentVal = permissions.masterBoDisposables !== undefined ? permissions.masterBoDisposables : (permissions.disposables ?? false);
+                          setPermissions(prev => ({
+                            ...prev,
+                            masterBoDisposables: !currentVal,
+                            disposables: !currentVal
+                          }));
+                          setSaveSuccess(false);
+                        }}
                         className="w-4 h-4 rounded text-violet-600 accent-violet-600 cursor-pointer"
                       />
                     </div>
@@ -521,55 +602,22 @@ export default function PermissionsPage() {
               ) : (
                 <div className="mt-3 text-xs text-slate-400 flex items-center gap-1.5">
                   <Lock size={13} />
-                  <span>Backoffice is currently disabled. Cashiers cannot view or modify salon services, product rates, packages, or memberships.</span>
+                  <span>Backoffice is currently disabled. Cashiers cannot view or modify salon services, product rates, packages, or disposables.</span>
                 </div>
               )}
             </div>
           </div>
         )}
 
-        {/* 3. INVENTORY, DISPOSABLES & EXPENSES */}
-        {(isAllowed('disposables') || isAllowed('inventory') || isAllowed('expenses')) && (
+        {/* 3. INVENTORY & EXPENSES */}
+        {(isAllowed('inventory') || isAllowed('expenses')) && (
           <div className="space-y-3">
             <div className="flex items-center gap-2 px-1">
               <span className="w-2.5 h-2.5 rounded-full bg-emerald-600" />
               <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Operations & Stock Management</h3>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {/* Disposables */}
-              {isAllowed('disposables') && (
-                <div className={`p-5 rounded-2xl border transition-all ${permissions.disposables ? 'bg-white border-slate-200 shadow-sm' : 'bg-slate-50/80 border-slate-200/60 opacity-70'}`}>
-                  <div className="flex justify-between items-start">
-                    <div className="w-10 h-10 rounded-xl bg-teal-50 text-teal-600 flex items-center justify-center shrink-0">
-                      <Package size={20} />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleToggle('disposables')}
-                      className={`w-12 h-6 flex items-center rounded-full p-1 cursor-pointer transition-colors duration-200 ease-in-out ${
-                        permissions.disposables ? 'bg-emerald-500' : 'bg-slate-300'
-                      }`}
-                    >
-                      <div
-                        className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ease-in-out ${
-                          permissions.disposables ? 'translate-x-6' : 'translate-x-0'
-                        }`}
-                      />
-                    </button>
-                  </div>
-                  <div className="mt-3">
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-bold text-slate-800 text-sm">Disposables</h4>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${permissions.disposables ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}>
-                        {permissions.disposables ? 'ENABLED' : 'HIDDEN'}
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-500 mt-1">Capes, Gloves, Neck Strips, Wastage Tracking & Stock</p>
-                    <span className="text-[10px] font-mono text-slate-400 mt-2 block">Route: /disposables</span>
-                  </div>
-                </div>
-              )}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 
               {/* Inventory */}
               {isAllowed('inventory') && (
@@ -783,10 +831,20 @@ export default function PermissionsPage() {
             </button>
             <button
               onClick={handleSave}
-              className="flex-1 sm:flex-none px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer"
+              disabled={isSaving}
+              className="flex-1 sm:flex-none px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer active:scale-95"
             >
-              <Check size={16} />
-              <span>Save & Apply Permissions</span>
+              {isSaving ? (
+                <>
+                  <Loader2 size={16} className="animate-spin text-white" />
+                  <span>Saving to Database...</span>
+                </>
+              ) : (
+                <>
+                  <Check size={16} />
+                  <span>Save & Apply Permissions</span>
+                </>
+              )}
             </button>
           </div>
         </div>

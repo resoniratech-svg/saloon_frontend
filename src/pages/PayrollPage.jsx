@@ -15,7 +15,7 @@ export default function PayrollPage() {
     };
   }, []);
   const [activeTab, setActiveTab] = useState('Payslip'); // Payslip, Salary Management
-  const [selectedStaff, setSelectedStaff] = useState('Respark Trial');
+  const [selectedStaff, setSelectedStaff] = useState('Siri H');
   const [selectedMonth, setSelectedMonth] = useState('August');
   const [selectedYear, setSelectedYear] = useState('2026');
   const [showSlip, setShowSlip] = useState(false);
@@ -25,7 +25,7 @@ export default function PayrollPage() {
   const years = ['2025', '2026', '2027'];
 
   const salaryData = [
-    { id: 1, staff: 'Respark Trial', designation: 'Senior Stylist', basic: 25000, commission: 8500, deduction: 1500, net: 32000, status: 'Processed' },
+    { id: 1, staff: 'Siri H', designation: 'Senior Stylist', basic: 25000, commission: 8500, deduction: 1500, net: 32000, status: 'Processed' },
     { id: 2, staff: 'Sohum K', designation: 'Color Specialist', basic: 22000, commission: 6200, deduction: 1200, net: 27000, status: 'Processed' },
     { id: 3, staff: 'Swati R', designation: 'Beautician & Spa', basic: 20000, commission: 7800, deduction: 1000, net: 26800, status: 'Processed' },
     { id: 4, staff: 'Akshay D', designation: 'Grooming Expert', basic: 18000, commission: 4500, deduction: 800, net: 21700, status: 'Pending' },

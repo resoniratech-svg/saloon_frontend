@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import TopNavBar from './TopNavBar';
 import Sidebar from './Sidebar';
+import ErrorBoundary from '../common/ErrorBoundary';
 import { Eye, LogOut } from 'lucide-react';
 import {
   isImpersonating,
@@ -82,7 +83,9 @@ const DashboardLayout = () => {
 
         {/* Page Content */}
         <main className="flex-1 overflow-auto w-full h-full">
-          <Outlet />
+          <ErrorBoundary>
+            <Outlet />
+          </ErrorBoundary>
         </main>
       </div>
     </div>

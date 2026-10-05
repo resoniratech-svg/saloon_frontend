@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, X, Eye, Edit2, Trash2, Printer, Download, FileText, CheckCircle2 } from 'lucide-react';
-import { getExpenses, saveExpenses } from '../utils/expenseStorage';
+import { Plus, X, Eye, Edit2, Trash2, Printer, Download, FileText, CheckCircle2, Loader2 } from 'lucide-react';
+import { getExpenses, saveExpenses, fetchExpensesFromBackend, deleteExpenseItem } from '../utils/expenseStorage';
+import { expenseApi } from '../api/client';
 import { getActiveTenant } from '../utils/saasStorage';
 
 export default function ExpensesPage() {
@@ -8,6 +9,9 @@ export default function ExpensesPage() {
   const [showAddExpenseModal, setShowAddExpenseModal] = useState(false);
   const [showEditExpenseModal, setShowEditExpenseModal] = useState(false);
   const [showReceiptModal, setShowReceiptModal] = useState(false);
+  const [notification, setNotification] = useState('');
+  const [isDeletingId, setIsDeletingId] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
 
   // Add Expense form
   const [expenseForm, setExpenseForm] = useState({
@@ -34,6 +38,7 @@ export default function ExpensesPage() {
   const [currentTenant, setCurrentTenant] = useState(getActiveTenant);
 
   useEffect(() => {
+    fetchExpensesFromBackend();
     const handleSync = () => {
       setExpenses(getExpenses());
       setCurrentTenant(getActiveTenant());
@@ -47,29 +52,50 @@ export default function ExpensesPage() {
   }, []);
 
   // Handlers
-  const handleAddExpense = () => {
+  const handleAddExpense = async () => {
     if (!expenseForm.amount || !expenseForm.expenseType?.trim()) {
       alert('Please enter amount and expense type');
       return;
     }
-    const newExp = {
-      id: `EXP-00${expenses.length + 1}`,
-      amount: parseFloat(expenseForm.amount) || 0,
-      expenseType: expenseForm.expenseType.trim(),
-      notes: expenseForm.notes?.trim() || '',
-      paymode: expenseForm.paymode,
-      date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-'),
-    };
-    const updated = [newExp, ...expenses];
-    setExpenses(updated);
-    saveExpenses(updated);
-    setShowAddExpenseModal(false);
-    setExpenseForm({
-      amount: '',
-      expenseType: '',
-      notes: '',
-      paymode: 'Card',
-    });
+    setIsSaving(true);
+    try {
+      const payload = {
+        amount: parseFloat(expenseForm.amount) || 0,
+        expenseTypeName: expenseForm.expenseType.trim(),
+        paymode: expenseForm.paymode,
+        paymentMethod: expenseForm.paymode,
+        description: expenseForm.notes?.trim() || '',
+        remark: expenseForm.notes?.trim() || '',
+        expenseDate: new Date().toISOString(),
+        store: 'kalyaninagar',
+      };
+      const res = await expenseApi.createExpense(payload);
+      const created = res?.data?.data || res?.data;
+      const newExp = {
+        id: created?.id || `EXP-00${Date.now()}`,
+        amount: parseFloat(expenseForm.amount) || 0,
+        expenseType: expenseForm.expenseType.trim(),
+        notes: expenseForm.notes?.trim() || '',
+        paymode: expenseForm.paymode,
+        date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-'),
+      };
+      setExpenses((prev) => [newExp, ...prev.filter((e) => e.id !== newExp.id)]);
+      setNotification(`Expense of ₹${newExp.amount.toLocaleString()} added successfully!`);
+      setTimeout(() => setNotification(''), 3000);
+      setShowAddExpenseModal(false);
+      setExpenseForm({
+        amount: '',
+        expenseType: '',
+        notes: '',
+        paymode: 'Card',
+      });
+      await fetchExpensesFromBackend();
+    } catch (err) {
+      console.error('Failed to add expense:', err);
+      alert('Failed to add expense: ' + (err.message || 'Unknown error'));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   // Open Edit Modal
@@ -85,35 +111,71 @@ export default function ExpensesPage() {
   };
 
   // Save Edit
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     if (!editForm.amount || !editForm.expenseType?.trim()) {
       alert('Please enter amount and expense type');
       return;
     }
-    const updated = expenses.map(exp => {
-      if (exp.id === editingExpense.id) {
-        return {
-          ...exp,
+    setIsSaving(true);
+    try {
+      const isUuid = typeof editingExpense?.id === 'string' && editingExpense.id.includes('-');
+      if (isUuid) {
+        await expenseApi.updateExpense(editingExpense.id, {
           amount: parseFloat(editForm.amount) || 0,
-          expenseType: editForm.expenseType.trim(),
-          notes: editForm.notes?.trim() || '',
+          expenseTypeName: editForm.expenseType.trim(),
           paymode: editForm.paymode,
-        };
+          paymentMethod: editForm.paymode,
+          description: editForm.notes?.trim() || '',
+          remark: editForm.notes?.trim() || '',
+        });
       }
-      return exp;
-    });
-    setExpenses(updated);
-    saveExpenses(updated);
-    setShowEditExpenseModal(false);
-    setEditingExpense(null);
+      const updated = expenses.map((exp) => {
+        if (exp.id === editingExpense?.id) {
+          return {
+            ...exp,
+            amount: parseFloat(editForm.amount) || 0,
+            expenseType: editForm.expenseType.trim(),
+            notes: editForm.notes?.trim() || '',
+            paymode: editForm.paymode,
+          };
+        }
+        return exp;
+      });
+      setExpenses(updated);
+      setNotification('Expense record updated successfully.');
+      setTimeout(() => setNotification(''), 3000);
+      setShowEditExpenseModal(false);
+      setEditingExpense(null);
+      await fetchExpensesFromBackend();
+    } catch (err) {
+      console.error('Failed to update expense:', err);
+      alert('Failed to update expense: ' + (err.message || 'Unknown error'));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   // Delete Expense
-  const handleDeleteExpense = (id) => {
-    if (window.confirm('Are you sure you want to delete this expense record?')) {
-      const updated = expenses.filter(exp => exp.id !== id);
-      setExpenses(updated);
-      saveExpenses(updated);
+  const handleDeleteExpense = async (id) => {
+    if (!window.confirm('Are you sure you want to delete this expense record?')) {
+      return;
+    }
+    setIsDeletingId(id);
+    try {
+      const isUuid = typeof id === 'string' && id.includes('-');
+      if (isUuid) {
+        await expenseApi.deleteExpense(id);
+      }
+      setExpenses((prev) => prev.filter((exp) => exp.id !== id));
+      await deleteExpenseItem(id);
+      setNotification('Expense record deleted successfully.');
+      setTimeout(() => setNotification(''), 3000);
+      await fetchExpensesFromBackend();
+    } catch (err) {
+      console.error('Failed to delete expense:', err);
+      alert('Failed to delete expense: ' + (err.message || 'Unknown error'));
+    } finally {
+      setIsDeletingId(null);
     }
   };
 
@@ -126,7 +188,7 @@ export default function ExpensesPage() {
   const totalExpenseAmt = expenses.reduce((acc, curr) => acc + curr.amount, 0);
 
   // Active Tenant Info for Receipt
-  const companyName = currentTenant?.companyName || currentTenant?.brandName || (currentTenant?.logoTextPrefix ? `${currentTenant.logoTextPrefix}${currentTenant.logoTextSuffix || ''}` : 'GLAMOUR SALON');
+  const companyName = currentTenant?.companyName || currentTenant?.brandName || currentTenant?.name || (currentTenant?.logoTextPrefix ? `${currentTenant.logoTextPrefix}${currentTenant.logoTextSuffix || ''}` : 'SALON');
   const companyLocation = currentTenant?.location || currentTenant?.city || 'vmd, Pune';
   const companyPhone = currentTenant?.phone || currentTenant?.mobile || '';
   const companyEmail = currentTenant?.email || '';
@@ -182,6 +244,13 @@ Authorized Signature: _________________________
           <Plus size={16} /> Add Expense
         </button>
       </div>
+
+      {notification && (
+        <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold rounded-xl flex items-center gap-2 animate-in fade-in duration-200">
+          <CheckCircle2 size={16} className="shrink-0 text-emerald-600" />
+          <span>{notification}</span>
+        </div>
+      )}
 
       <div className="space-y-6">
         {/* Total Expenses Stat Card */}
@@ -256,11 +325,16 @@ Authorized Signature: _________________________
                           {/* Delete Button */}
                           <button
                             onClick={() => handleDeleteExpense(exp.id)}
-                            className="p-1.5 text-rose-600 hover:text-rose-800 hover:bg-rose-50 rounded-lg transition-colors flex items-center gap-1 text-xs font-semibold cursor-pointer"
+                            disabled={isDeletingId === exp.id}
+                            className="p-1.5 text-rose-600 hover:text-rose-800 hover:bg-rose-50 rounded-lg transition-colors flex items-center gap-1 text-xs font-semibold cursor-pointer disabled:opacity-50"
                             title="Delete Expense"
                           >
-                            <Trash2 size={15} />
-                            <span>Delete</span>
+                            {isDeletingId === exp.id ? (
+                              <Loader2 size={15} className="animate-spin text-rose-600" />
+                            ) : (
+                              <Trash2 size={15} />
+                            )}
+                            <span>{isDeletingId === exp.id ? 'Deleting...' : 'Delete'}</span>
                           </button>
                         </div>
                       </td>

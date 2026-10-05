@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, ChevronDown, Download, Upload, MoreVertical, ArrowDown, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, X, SlidersHorizontal, Eye, Edit3, Trash2, ShoppingCart, Phone, Award, History, Package, CreditCard, Calendar, Clock, Receipt, CheckCircle2 } from 'lucide-react';
-import { getCustomers, saveCustomers, addCustomer, updateCustomer, deleteCustomer } from '../utils/customerStorage';
+import { Search, ChevronDown, MoreVertical, ArrowDown, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, X, SlidersHorizontal, Eye, Edit3, Trash2, ShoppingCart, Phone, Award, History, Package, CreditCard, Calendar, Clock, Receipt, CheckCircle2 } from 'lucide-react';
+import { getCustomers, saveCustomers, addCustomer, updateCustomer, deleteCustomer, fetchCustomersFromBackend } from '../utils/customerStorage';
 import { getOrders, updateOrder } from '../utils/orderStorage';
 import { getAppointments } from '../utils/appointmentStorage';
 import { isReadOnlySession, notifyReadOnlyBlocked } from '../utils/saasStorage';
@@ -17,7 +17,6 @@ const FiltersModal = ({ isOpen, onClose, filters, onApply, onClear }) => {
   const [lastVisitedTo, setLastVisitedTo] = useState(filters?.lastVisitedTo || '');
   const [selectedPackages, setSelectedPackages] = useState(filters?.packages || 'all');
   const [minBalance, setMinBalance] = useState(filters?.minBalance || '');
-  const [selectedMembership, setSelectedMembership] = useState(filters?.membership || 'all');
 
   useEffect(() => {
     if (isOpen && filters) {
@@ -26,7 +25,6 @@ const FiltersModal = ({ isOpen, onClose, filters, onApply, onClear }) => {
       setLastVisitedTo(filters.lastVisitedTo || '');
       setSelectedPackages(filters.packages || 'all');
       setMinBalance(filters.minBalance || '');
-      setSelectedMembership(filters.membership || 'all');
     }
   }, [isOpen, filters]);
 
@@ -35,7 +33,6 @@ const FiltersModal = ({ isOpen, onClose, filters, onApply, onClear }) => {
     'Last Visited',
     'Packages',
     'Balance',
-    'Membership',
   ];
 
   const handleApply = () => {
@@ -46,7 +43,6 @@ const FiltersModal = ({ isOpen, onClose, filters, onApply, onClear }) => {
         lastVisitedTo,
         packages: selectedPackages,
         minBalance,
-        membership: selectedMembership,
       });
     }
     onClose();
@@ -59,14 +55,12 @@ const FiltersModal = ({ isOpen, onClose, filters, onApply, onClear }) => {
       lastVisitedTo: '',
       packages: 'all',
       minBalance: '',
-      membership: 'all',
     };
     setSelectedGender('Both');
     setLastVisitedFrom('');
     setLastVisitedTo('');
     setSelectedPackages('all');
     setMinBalance('');
-    setSelectedMembership('all');
     if (onClear) {
       onClear(defaultFilters);
     }
@@ -149,22 +143,7 @@ const FiltersModal = ({ isOpen, onClose, filters, onApply, onClear }) => {
             <p className="text-xs text-slate-400">Filter customers with outstanding balance due</p>
           </div>
         );
-      case 'Membership':
-        return (
-          <div className="space-y-3">
-            <label className="text-xs text-slate-500 mb-1 block">Membership Status</label>
-            <select 
-              value={selectedMembership}
-              onChange={(e) => setSelectedMembership(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-500 bg-white"
-            >
-              <option value="all">All Customers</option>
-              <option value="active">Active Members Only</option>
-              <option value="none">Non-Members Only</option>
-            </select>
-            <p className="text-xs text-slate-400">Filter customers by membership enrollment</p>
-          </div>
-        );
+
       default:
         return (
           <p className="text-sm text-slate-400 italic">No filter options available for {activeFilter}</p>
@@ -293,8 +272,8 @@ const AddGuestModal = ({ isOpen, onClose, onAddGuest }) => {
         advance: 0,
         balance: 0,
         membershipCount: '-',
-        email: formData.email || '-',
-        birthDate: formData.dob || '-',
+        email: formData.email.trim() ? formData.email.trim() : '',
+        birthDate: formData.dob || '',
       });
     }
     setFormData({
@@ -415,43 +394,7 @@ const AddGuestModal = ({ isOpen, onClose, onAddGuest }) => {
             </div>
           </div>
 
-          {/* Row 4: Loyalty Tier + Points */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-100">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1.5">
-                <Award size={15} className="text-amber-500" />
-                <span>Loyalty Tier</span>
-              </label>
-              <select
-                value={formData.loyaltyTier}
-                onChange={(e) => handleTierChange(e.target.value)}
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white text-slate-700 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 cursor-pointer"
-              >
-                <option value="Standard">Standard (0 pts)</option>
-                <option value="Silver">Silver (100 pts)</option>
-                <option value="Gold">Gold (250 pts)</option>
-                <option value="Platinum VIP">Platinum VIP (500 pts)</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                Loyalty Points
-              </label>
-              <div className="relative">
-                <input
-                  type="number"
-                  min="0"
-                  value={formData.loyaltyPoints}
-                  onChange={(e) => handleChange('loyaltyPoints', e.target.value)}
-                  placeholder="0"
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400 pointer-events-none">
-                  pts
-                </span>
-              </div>
-            </div>
-          </div>
+
         </div>
 
         {/* Footer */}
@@ -540,21 +483,12 @@ const ViewCustomerModal = ({ isOpen, onClose, customer, onEdit, onGoToPos, onVie
               <span className="text-slate-500 font-medium">Last Visit:</span>
               <span className="font-semibold text-slate-800">{customer.lastVisited || '-'}</span>
             </div>
-            <div className="flex justify-between py-2 border-b border-slate-100">
-              <span className="text-slate-500 font-medium">Loyalty Tier & Points:</span>
-              <span className="font-semibold text-indigo-600 flex items-center gap-1.5">
-                <Award size={14} className="text-amber-500" />
-                <span>{customer.loyalty && customer.loyalty !== '-' ? customer.loyalty : 'Standard (0 pts)'}</span>
-              </span>
-            </div>
+
             <div className="flex justify-between py-2 border-b border-slate-100">
               <span className="text-slate-500 font-medium">Outstanding Balance:</span>
               <span className="font-semibold text-rose-600">₹{customer.balance ?? 0}</span>
             </div>
-            <div className="flex justify-between py-2 border-b border-slate-100">
-              <span className="text-slate-500 font-medium">Membership:</span>
-              <span className="font-semibold text-emerald-600">{customer.membershipCount || 'None'}</span>
-            </div>
+
             <div className="flex justify-between py-2">
               <span className="text-slate-500 font-medium">Package:</span>
               <span className="font-semibold text-violet-600">{customer.packageDisplay || customer.package || (customer.packageCount && customer.packageCount !== '-' ? `${customer.packageCount} Active` : 'None')}</span>
@@ -669,6 +603,47 @@ const getCustomerFullHistory = (customer, allOrders = [], allAppointments = []) 
   const seenPackageKeys = new Set();
   const seenPackageNames = new Set();
 
+  // A. From customer.packages / customer.guestPackages (direct database records)
+  const dbPackages = Array.isArray(customer.packages)
+    ? customer.packages
+    : (Array.isArray(customer.guestPackages) ? customer.guestPackages : []);
+
+  dbPackages.forEach((pkg, idx) => {
+    const normName = (pkg.name || '').trim().toLowerCase();
+    seenPackageNames.add(normName);
+    if (pkg.id) seenPackageKeys.add(String(pkg.id));
+
+    const pDate = pkg.purchaseDate ? new Date(pkg.purchaseDate) : null;
+    const purchaseDateStr = pDate && !isNaN(pDate.getTime())
+      ? pDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+      : (customer.lastVisited || 'Recent');
+
+    const expDate = pkg.expiryDate ? new Date(pkg.expiryDate) : null;
+    const expiryDateStr = expDate && !isNaN(expDate.getTime())
+      ? expDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+      : `${pkg.validityDays || 180} Days`;
+
+    const rawStatus = (pkg.status || 'Active').toLowerCase();
+    const statusFormatted = rawStatus.charAt(0).toUpperCase() + rawStatus.slice(1);
+
+    packagesList.push({
+      id: pkg.id || `pkg_db_${idx}`,
+      name: pkg.name || 'Service Package',
+      category: typeof pkg.services === 'string'
+        ? pkg.services
+        : (Array.isArray(pkg.services) ? pkg.services.map(s => s.name || s).join(', ') : 'Package Subscription'),
+      purchaseDate: purchaseDateStr,
+      validityDays: pkg.validityDays || 180,
+      expiryDate: expiryDateStr,
+      amount: pkg.price || pkg.amount || 0,
+      orderId: pkg.invoiceNumber || pkg.orderId || 'PKG-DB',
+      status: statusFormatted,
+      totalSessions: pkg.totalSessions,
+      remainingSessions: pkg.remainingSessions,
+    });
+  });
+
+  // B. From matched POS orders
   matchedOrders.forEach(o => {
     const oDate = o.dateDisplay || o.date || 'Today';
     (o.items || []).forEach(item => {
@@ -678,30 +653,40 @@ const getCustomerFullHistory = (customer, allOrders = [], allAppointments = []) 
                     (item.name && item.name.toLowerCase().includes('package'));
       if (isPkg) {
         const normName = (item.name || '').trim().toLowerCase();
-        const pkgKey = `${normName}_${o.invoiceNo || o.id || oDate}`;
-        if (!seenPackageKeys.has(pkgKey)) {
-          seenPackageKeys.add(pkgKey);
-          seenPackageNames.add(normName);
-          const validityDays = item.validityDays || 180;
-          const pDate = new Date(o.date || Date.now());
-          const expDate = new Date(pDate.getTime() + validityDays * 24 * 60 * 60 * 1000);
-          packagesList.push({
-            id: item.id || `pkg_${Math.random()}`,
-            name: item.name || 'Service Package',
-            category: item.category || 'Package Subscription',
-            purchaseDate: oDate,
-            validityDays: validityDays,
-            expiryDate: isNaN(expDate.getTime()) ? `${validityDays} Days from visit` : expDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-            amount: item.total || item.price || 0,
-            orderId: o.invoiceNo || o.invoiceId || o.id,
-            status: 'Active'
-          });
+        const existing = packagesList.find(p => (p.name || '').trim().toLowerCase() === normName);
+        if (existing) {
+          if (!existing.orderId || existing.orderId === 'PKG-DB') {
+            existing.orderId = o.invoiceNo || o.id;
+          }
+          if (oDate && (!existing.purchaseDate || existing.purchaseDate === 'Recent')) {
+            existing.purchaseDate = oDate;
+          }
+        } else {
+          const pkgKey = `${normName}_${o.invoiceNo || o.id || oDate}`;
+          if (!seenPackageKeys.has(pkgKey)) {
+            seenPackageKeys.add(pkgKey);
+            seenPackageNames.add(normName);
+            const validityDays = item.validityDays || 180;
+            const pDate = new Date(o.date || Date.now());
+            const expDate = new Date(pDate.getTime() + validityDays * 24 * 60 * 60 * 1000);
+            packagesList.push({
+              id: item.id || `pkg_${Math.random()}`,
+              name: item.name || 'Service Package',
+              category: item.category || 'Package Subscription',
+              purchaseDate: oDate,
+              validityDays: validityDays,
+              expiryDate: isNaN(expDate.getTime()) ? `${validityDays} Days from visit` : expDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+              amount: item.total || item.price || 0,
+              orderId: o.invoiceNo || o.invoiceId || o.id,
+              status: 'Active'
+            });
+          }
         }
       }
     });
   });
 
-  // From customer profile package attribute (only if not already extracted from orders)
+  // C. From customer profile package attribute (only if not already extracted)
   const profilePkgName = (customer.package || '').trim().toLowerCase();
   if (customer.package && customer.package !== '-' && !seenPackageNames.has(profilePkgName)) {
     seenPackageNames.add(profilePkgName);
@@ -899,7 +884,12 @@ const CustomerOrderHistoryModal = ({ isOpen, onClose, customer, allOrders, allAp
           </div>
           <div className="bg-white p-2.5 rounded-xl border border-slate-100 shadow-2xs">
             <span className="text-slate-400 block text-[10px] uppercase font-bold">Active Packages</span>
-            <span className="text-base font-black text-purple-600">{history.packages.length}</span>
+            <span className="text-base font-black text-purple-600">
+              {history.packages.filter(p => (p.status || '').toLowerCase() === 'active').length}
+              {history.packages.length > history.packages.filter(p => (p.status || '').toLowerCase() === 'active').length && (
+                <span className="text-xs text-slate-400 font-normal ml-1">/ {history.packages.length}</span>
+              )}
+            </span>
           </div>
           <div className="bg-white p-2.5 rounded-xl border border-slate-100 shadow-2xs">
             <span className="text-slate-400 block text-[10px] uppercase font-bold">Memberships</span>
@@ -1119,13 +1109,19 @@ const CustomerOrderHistoryModal = ({ isOpen, onClose, customer, allOrders, allAp
                         <span className="text-xs font-black text-purple-700 bg-purple-50 px-2.5 py-1 rounded-lg border border-purple-200">
                           ₹{Number(pkg.amount || 0).toLocaleString()}
                         </span>
-                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${
+                          (pkg.status || '').toLowerCase() === 'completed'
+                            ? 'bg-slate-100 text-slate-600 border-slate-200'
+                            : (pkg.status || '').toLowerCase() === 'expired'
+                            ? 'bg-rose-50 text-rose-700 border-rose-200'
+                            : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        }`}>
                           {pkg.status || 'Active'}
                         </span>
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-3 text-xs">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3 text-xs">
                       <div>
                         <span className="text-slate-400 text-[10px] uppercase font-bold block">Purchase Date</span>
                         <span className="font-semibold text-slate-700 flex items-center gap-1 mt-0.5">
@@ -1142,6 +1138,14 @@ const CustomerOrderHistoryModal = ({ isOpen, onClose, customer, allOrders, allAp
                         <span className="text-slate-400 text-[10px] uppercase font-bold block">Valid Until</span>
                         <span className="font-semibold text-emerald-600 flex items-center gap-1 mt-0.5">
                           <CheckCircle2 size={12} className="text-emerald-500" /> {pkg.expiryDate || '-'}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 text-[10px] uppercase font-bold block">Sessions</span>
+                        <span className="font-semibold text-slate-700 mt-0.5 block">
+                          {pkg.totalSessions !== undefined && pkg.totalSessions !== null
+                            ? `${pkg.remainingSessions ?? 0} of ${pkg.totalSessions} left`
+                            : 'Unlimited'}
                         </span>
                       </div>
                     </div>
@@ -1413,9 +1417,9 @@ const EditCustomerModal = ({ isOpen, onClose, customer, onUpdate }) => {
       ...customer,
       name: formData.name.trim(),
       mobile: formData.mobile.trim(),
-      email: formData.email.trim() || '-',
-      birthDate: formData.dob || '-',
-      dob: formData.dob || '-',
+      email: formData.email.trim() ? formData.email.trim() : '',
+      birthDate: formData.dob || '',
+      dob: formData.dob || '',
       gender: formData.gender,
       loyalty: loyaltyStr,
       loyaltyPoints: pts,
@@ -1516,43 +1520,7 @@ const EditCustomerModal = ({ isOpen, onClose, customer, onUpdate }) => {
             </div>
           </div>
 
-          {/* Loyalty Tier & Loyalty Points */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-100">
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 uppercase mb-1 flex items-center gap-1.5">
-                <Award size={14} className="text-amber-500" />
-                <span>Loyalty Tier</span>
-              </label>
-              <select
-                value={formData.loyaltyTier}
-                onChange={(e) => handleTierChange(e.target.value)}
-                className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm bg-white focus:outline-none focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 cursor-pointer"
-              >
-                <option value="Standard">Standard (0 pts)</option>
-                <option value="Silver">Silver (100 pts)</option>
-                <option value="Gold">Gold (250 pts)</option>
-                <option value="Platinum VIP">Platinum VIP (500 pts)</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
-                Loyalty Points
-              </label>
-              <div className="relative">
-                <input
-                  type="number"
-                  min="0"
-                  value={formData.loyaltyPoints}
-                  onChange={(e) => setFormData({ ...formData, loyaltyPoints: e.target.value })}
-                  placeholder="0"
-                  className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600"
-                />
-                <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-medium text-slate-400 pointer-events-none">
-                  pts
-                </span>
-              </div>
-            </div>
-          </div>
+
 
           <div className="flex justify-end gap-2.5 pt-4 border-t border-slate-100">
             <button
@@ -1597,7 +1565,6 @@ const CRMPage = () => {
     lastVisitedTo: '',
     packages: 'all',
     minBalance: '',
-    membership: 'all',
   };
 
   const [appliedFilters, setAppliedFilters] = useState(initialFilterState);
@@ -1608,20 +1575,27 @@ const CRMPage = () => {
     if (appliedFilters.lastVisitedFrom || appliedFilters.lastVisitedTo) count++;
     if (appliedFilters.packages && appliedFilters.packages !== 'all') count++;
     if (appliedFilters.minBalance) count++;
-    if (appliedFilters.membership && appliedFilters.membership !== 'all') count++;
     return count;
   }, [appliedFilters]);
 
   useEffect(() => {
+    fetchCustomersFromBackend();
+
     const handleUpdate = () => {
       setCustomerList(getCustomers());
       setOrders(getOrders());
       setAppointments(getAppointments());
     };
+
+    const handleTenant = () => {
+      handleUpdate();
+      fetchCustomersFromBackend();
+    };
+
     window.addEventListener('customersUpdated', handleUpdate);
     window.addEventListener('ordersUpdated', handleUpdate);
     window.addEventListener('appointmentsUpdated', handleUpdate);
-    window.addEventListener('tenantChanged', handleUpdate);
+    window.addEventListener('tenantChanged', handleTenant);
     window.addEventListener('storage', handleUpdate);
 
     return () => {
@@ -1765,34 +1739,47 @@ const CRMPage = () => {
     setCustomerList(updated);
   };
 
-  const handleUpdateCustomer = (updatedGuest) => {
+  const handleUpdateCustomer = async (updatedGuest) => {
     if (isReadOnlySession()) {
       notifyReadOnlyBlocked('Updating customer records');
       return;
     }
-    const updated = updateCustomer(updatedGuest);
-    setCustomerList(updated);
+    try {
+      await updateCustomer(updatedGuest);
+      const refreshed = await fetchCustomersFromBackend();
+      if (refreshed) setCustomerList(refreshed);
+    } catch (err) {
+      alert(`Failed to update customer: ${err?.message || 'Please check values and try again'}`);
+    }
   };
 
-  const handleDeleteCustomer = (customerId, customerName) => {
+  const handleDeleteCustomer = async (customerId, customerName) => {
     if (isReadOnlySession()) {
       notifyReadOnlyBlocked('Deleting customer records');
       return;
     }
-    if (window.confirm(`Are you sure you want to delete customer "${customerName || 'this guest'}"?`)) {
-      const updated = deleteCustomer(customerId);
-      setCustomerList(updated);
+    if (window.confirm(`Are you sure you want to permanently delete customer "${customerName || 'this customer'}" from the database?`)) {
+      try {
+        await deleteCustomer(customerId);
+        const refreshed = await fetchCustomersFromBackend();
+        if (refreshed) setCustomerList(refreshed);
+      } catch (err) {
+        alert(`Failed to delete customer: ${err?.message || 'Database error occurred'}`);
+      }
     }
   };
 
   const filteredCustomers = customerList.filter(c => {
+    const metrics = getCustomerMetrics(c);
+
     // 1. Search term
     if (searchTerm.trim()) {
       const term = searchTerm.toLowerCase();
       const match = (
         (c.name && c.name.toLowerCase().includes(term)) ||
         (c.mobile && c.mobile.toLowerCase().includes(term)) ||
-        (c.email && c.email.toLowerCase().includes(term))
+        (c.email && c.email.toLowerCase().includes(term)) ||
+        (metrics.packageDisplay && metrics.packageDisplay.toLowerCase().includes(term))
       );
       if (!match) return false;
     }
@@ -1808,7 +1795,6 @@ const CRMPage = () => {
 
     // 3. Last Visited Date Range
     if (appliedFilters.lastVisitedFrom || appliedFilters.lastVisitedTo) {
-      const metrics = getCustomerMetrics(c);
       const visitStr = metrics.lastVisited || c.lastVisited;
       if (!visitStr || visitStr === '-') return false;
       const visitDate = new Date(visitStr);
@@ -1825,31 +1811,28 @@ const CRMPage = () => {
       }
     }
 
-    // 4. Packages
+    // 4. Packages (Accurately checks packages purchased in POS orders & customer profile)
     if (appliedFilters.packages && appliedFilters.packages !== 'all') {
-      const hasPkg = (Array.isArray(c.packages) && c.packages.length > 0) || 
-                     (c.packageCount && c.packageCount !== '-' && c.packageCount !== '0') ||
+      const hasPkg = (metrics.packageCount > 0) ||
+                     (metrics.packageDisplay && metrics.packageDisplay !== '-') ||
+                     (Array.isArray(c.packages) && c.packages.length > 0) || 
+                     (c.packageCount && c.packageCount !== '-' && c.packageCount !== 0 && c.packageCount !== '0') ||
+                     Boolean(c.package && c.package !== '-') ||
                      Boolean(c.hasPackage);
       if (appliedFilters.packages === 'has_package' && !hasPkg) return false;
       if (appliedFilters.packages === 'no_package' && hasPkg) return false;
     }
 
-    // 5. Balance
+    // 5. Balance (Accurately checks outstanding order balance & due balance)
     if (appliedFilters.minBalance) {
       const minB = parseFloat(appliedFilters.minBalance);
       if (!isNaN(minB)) {
-        const custBal = parseFloat(c.balance) || 0;
+        const custBal = Math.max(parseFloat(metrics.balance) || 0, parseFloat(c.balance) || 0);
         if (custBal < minB) return false;
       }
     }
 
-    // 6. Membership
-    if (appliedFilters.membership && appliedFilters.membership !== 'all') {
-      const isMember = (c.membershipCount && c.membershipCount !== '-' && c.membershipCount !== '0') ||
-                       Boolean(c.membershipStatus === 'Active' || c.isMember);
-      if (appliedFilters.membership === 'active' && !isMember) return false;
-      if (appliedFilters.membership === 'none' && isMember) return false;
-    }
+
 
     return true;
   });
@@ -1883,15 +1866,9 @@ const CRMPage = () => {
             </button>
             <button
               onClick={() => setShowAddGuest(true)}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap cursor-pointer"
+              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap cursor-pointer shadow-xs"
             >
               + Add Customer
-            </button>
-            <button className="flex items-center gap-2 bg-slate-800 hover:bg-slate-900 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap">
-              <Download size={16} /> Import
-            </button>
-            <button className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap">
-              <Upload size={16} /> Export as XLSX <ChevronDown size={16} />
             </button>
           </div>
         </div>
@@ -1944,17 +1921,7 @@ const CRMPage = () => {
                 </button>
               </span>
             )}
-            {appliedFilters.membership !== 'all' && (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
-                Membership: {appliedFilters.membership === 'active' ? 'Active Members' : 'Non-Members'}
-                <button
-                  onClick={() => setAppliedFilters(prev => ({ ...prev, membership: 'all' }))}
-                  className="hover:text-indigo-900 cursor-pointer"
-                >
-                  <X size={12} />
-                </button>
-              </span>
-            )}
+
             <button
               onClick={() => setAppliedFilters(initialFilterState)}
               className="text-xs text-rose-600 hover:text-rose-800 font-semibold cursor-pointer underline ml-1"
@@ -1984,9 +1951,7 @@ const CRMPage = () => {
                 </th>
                 <th className="px-4 py-3 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Orders</th>
                 <th className="px-4 py-3 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Purchase Amount</th>
-                <th className="px-4 py-3 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">Loyalty</th>
                 <th className="px-4 py-3 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">Balance</th>
-                <th className="px-4 py-3 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">Membership Count</th>
                 <th className="px-4 py-3 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">Package</th>
                 <th className="px-4 py-3 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">Email</th>
                 <th className="px-4 py-3 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">Birth Date</th>
@@ -2021,24 +1986,7 @@ const CRMPage = () => {
                       </button>
                     </td>
                     <td className="px-4 py-3 text-sm text-slate-700 font-bold">{metrics.totalPurchaseAmount}</td>
-                    <td className="px-4 py-3 text-sm">
-                      {customer.loyalty && customer.loyalty !== '-' ? (
-                        <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold ${
-                          customer.loyalty.toLowerCase().includes('platinum')
-                            ? 'bg-purple-50 text-purple-700 border border-purple-200'
-                            : customer.loyalty.toLowerCase().includes('gold')
-                            ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                            : customer.loyalty.toLowerCase().includes('silver')
-                            ? 'bg-slate-100 text-slate-700 border border-slate-300'
-                            : 'bg-indigo-50 text-indigo-700 border border-indigo-200'
-                        }`}>
-                          <Award size={13} className="shrink-0" />
-                          <span>{customer.loyalty}</span>
-                        </span>
-                      ) : (
-                        <span className="text-slate-400 font-medium">-</span>
-                      )}
-                    </td>
+
                     <td className="px-4 py-3 text-sm">
                       {metrics.balance > 0 ? (
                         <span className="inline-flex items-center gap-1 font-bold text-rose-600 bg-rose-50 px-2.5 py-0.5 rounded-full border border-rose-200">
@@ -2048,7 +1996,6 @@ const CRMPage = () => {
                         <span className="text-slate-600 font-medium">0</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-sm text-slate-600">{customer.membershipCount ?? '-'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">
                       {metrics.packageDisplay && metrics.packageDisplay !== '-' ? (
                         <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-violet-50 text-violet-700 border border-violet-200">
@@ -2136,7 +2083,7 @@ const CRMPage = () => {
                                 className="w-full px-3.5 py-2 text-xs text-slate-700 hover:bg-indigo-50 hover:text-indigo-600 flex items-center gap-2.5 font-medium transition-colors cursor-pointer"
                               >
                                 <Edit3 size={14} className="text-amber-600" />
-                                <span>Edit Guest</span>
+                                <span>Edit Customer</span>
                               </button>
 
                               <button
@@ -2164,7 +2111,7 @@ const CRMPage = () => {
                                 className="w-full px-3.5 py-2 text-xs text-rose-600 hover:bg-rose-50 flex items-center gap-2.5 font-medium transition-colors cursor-pointer"
                               >
                                 <Trash2 size={14} />
-                                <span>Delete Guest</span>
+                                <span>Delete Customer</span>
                               </button>
                             </div>
                           </>
@@ -2177,7 +2124,7 @@ const CRMPage = () => {
               })}
               {(!filteredCustomers || filteredCustomers.length === 0) && (
                 <tr>
-                  <td colSpan="14" className="px-4 py-8 text-center text-slate-500 bg-slate-50">
+                  <td colSpan="13" className="px-4 py-8 text-center text-slate-500 bg-slate-50">
                     No customers found.
                   </td>
                 </tr>

@@ -1,104 +1,167 @@
 import { getActiveTenantId } from './saasStorage';
+import { expenseApi } from '../api/client';
 
-const getExpenseStorageKey = () => `respark_expenses_${getActiveTenantId()}`;
-const getAccountsStorageKey = () => `respark_accounts_${getActiveTenantId()}`;
+/**
+ * PURE DATABASE-ONLY EXPENSES & ACCOUNTS STORAGE
+ * All expenses and accounts are loaded and saved directly to the PostgreSQL database via expenseApi.
+ * Zero expense records are stored in browser localStorage.
+ */
 
-export const initialExpensesGlamour = [
-  { id: 'EXP-001', amount: 5000, expenseType: 'Repair & Maintenance', notes: 'AC service and electrical wiring repair', paymode: 'Card', date: '26-Aug-2026' },
-  { id: 'EXP-002', amount: 12000, expenseType: 'Rent Expense', notes: 'Monthly salon premise rent', paymode: 'Bank Transfer', date: '01-Aug-2026' },
-  { id: 'EXP-003', amount: 2500, expenseType: 'Housekeeping Expense', notes: 'Cleaning and sanitization supplies', paymode: 'Cash', date: '15-Aug-2026' },
-  { id: 'EXP-004', amount: 3500, expenseType: 'Salon Consumables', notes: 'Salon hair towels and cotton supplies', paymode: 'Card', date: '18-Aug-2026' },
-];
+let inMemoryExpenses = [];
+let inMemoryAccounts = [];
+let hasFetchedExpenses = false;
+let isFetchingExpenses = false;
 
-export const initialExpensesNaturals = [
-  { id: 'NAT-EXP-01', amount: 4500, expenseType: 'Salon Consumables', notes: 'Herbal extracts & oils supplies', paymode: 'Card', date: '15-Aug-2026' },
-  { id: 'NAT-EXP-02', amount: 15000, expenseType: 'Rent Expense', notes: 'Hinjewadi salon premise rent', paymode: 'Bank Transfer', date: '01-Aug-2026' },
-];
-
-export const initialExpensesEnrich = [
-  { id: 'ENR-EXP-01', amount: 28000, expenseType: 'Rent Expense', notes: 'Express Towers salon premise rent', paymode: 'Bank Transfer', date: '01-Aug-2026' },
-  { id: 'ENR-EXP-02', amount: 8500, expenseType: 'Training Expense', notes: 'L\'Oreal Academy master training', paymode: 'Card', date: '12-Aug-2026' },
-];
-
-export const initialAccountsGlamour = [
-  { id: 1, name: 'Current', type: 'Current Account', balance: 45200 },
-  { id: 2, name: 'Vendor Payment Account', type: 'Escrow / Vendor', balance: 32000 },
-  { id: 3, name: 'AXIS Bank Account', type: 'Savings', balance: 78500 },
-  { id: 4, name: 'HDFC', type: 'Current', balance: 112000 },
-  { id: 5, name: 'Canara Bank', type: 'Current', balance: 64500 },
-  { id: 6, name: 'sbi', type: 'Savings', balance: 48900 },
-];
-
-export const initialAccountsNaturals = [
-  { id: 1, name: 'Current', type: 'Current Account', balance: 62000 },
-  { id: 2, name: 'ICICI Current', type: 'Current Account', balance: 145000 },
-  { id: 3, name: 'Cash Register', type: 'Cash', balance: 15000 },
-];
-
-export const initialAccountsEnrich = [
-  { id: 1, name: 'HDFC Corporate', type: 'Current Account', balance: 320000 },
-  { id: 2, name: 'Axis Bank', type: 'Current Account', balance: 180000 },
-  { id: 3, name: 'Petty Cash', type: 'Cash', balance: 25000 },
-];
-
-export const getExpenses = () => {
-  const tenantId = getActiveTenantId();
-  const key = getExpenseStorageKey();
-
+// Purge any legacy localStorage keys so browser storage remains completely clean
+export const purgeLocalExpenses = () => {
   try {
-    const data = localStorage.getItem(key);
-    if (!data) {
-      let initial = initialExpensesGlamour;
-      if (tenantId === 'tenant_naturals') initial = initialExpensesNaturals;
-      else if (tenantId === 'tenant_enrich') initial = initialExpensesEnrich;
-      else if (tenantId !== 'tenant_glamour') initial = [];
-
-      localStorage.setItem(key, JSON.stringify(initial));
-      return initial;
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('respark_expenses_') || k.startsWith('respark_accounts_'))) {
+        localStorage.removeItem(k);
+      }
     }
-    return JSON.parse(data);
   } catch (err) {
-    return [];
+    // Ignore storage errors
   }
 };
 
-export const saveExpenses = (expenses) => {
-  const key = getExpenseStorageKey();
+// Immediately execute cleanup on module load
+purgeLocalExpenses();
+
+export const mapBackendExpenseToFrontend = (e) => ({
+  id: e.id,
+  amount: Number(e.amount || 0),
+  expenseType: e.type?.name || e.expenseType || e.expenseTypeName || 'General Expense',
+  notes: e.description || e.notes || e.remark || '',
+  paymode: e.paymentMethod || e.paymode || 'Cash',
+  date: e.expenseDate
+    ? new Date(e.expenseDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-')
+    : 'Today',
+});
+
+export const fetchExpensesFromBackend = async () => {
+  if (isFetchingExpenses) return inMemoryExpenses;
+  isFetchingExpenses = true;
+  purgeLocalExpenses();
   try {
-    localStorage.setItem(key, JSON.stringify(expenses));
-    window.dispatchEvent(new Event('expensesUpdated'));
+    const res = await expenseApi.getExpenses({ limit: 100 });
+    const items = Array.isArray(res?.data?.data) ? res.data.data : Array.isArray(res?.data) ? res.data : [];
+    if (Array.isArray(items)) {
+      inMemoryExpenses = items.map(mapBackendExpenseToFrontend);
+      hasFetchedExpenses = true;
+      window.dispatchEvent(new Event('expensesUpdated'));
+      return inMemoryExpenses;
+    }
   } catch (err) {
-    console.error('Failed to save expenses:', err);
+    console.warn('Backend expenses fetch note:', err);
+  } finally {
+    isFetchingExpenses = false;
   }
+  return inMemoryExpenses;
+};
+
+export const getExpenses = () => {
+  purgeLocalExpenses();
+  if (!hasFetchedExpenses) {
+    fetchExpensesFromBackend();
+  }
+  return [...inMemoryExpenses];
+};
+
+export const saveExpenses = async (expenses) => {
+  purgeLocalExpenses();
+  const prevList = [...inMemoryExpenses];
+  inMemoryExpenses = Array.isArray(expenses) ? expenses : [];
+  window.dispatchEvent(new Event('expensesUpdated'));
+
+  // If a new expense was added, send to PostgreSQL database
+  if (inMemoryExpenses.length > prevList.length) {
+    const addedItem = inMemoryExpenses[0];
+    if (addedItem) {
+      try {
+        const payload = {
+          amount: Number(addedItem.amount) || 0,
+          expenseTypeName: addedItem.expenseType || 'General Expense',
+          paymode: addedItem.paymode || 'Cash',
+          paymentMethod: addedItem.paymode || 'Cash',
+          description: addedItem.notes || '',
+          remark: addedItem.notes || '',
+          expenseDate: new Date().toISOString(),
+          store: 'kalyaninagar',
+        };
+        const res = await expenseApi.createExpense(payload);
+        const created = res?.data?.data || res?.data;
+        if (created && created.id) {
+          inMemoryExpenses = inMemoryExpenses.map((exp) => (exp.id === addedItem.id ? { ...exp, id: created.id } : exp));
+          window.dispatchEvent(new Event('expensesUpdated'));
+        }
+      } catch (err) {
+        console.warn('Backend expense save note:', err);
+      }
+    }
+  } else if (inMemoryExpenses.length < prevList.length) {
+    // Expense was deleted
+    const deleted = prevList.find((p) => !inMemoryExpenses.some((curr) => curr.id === p.id));
+    if (deleted && deleted.id && !String(deleted.id).startsWith('EXP-')) {
+      try {
+        await expenseApi.deleteExpense(deleted.id);
+      } catch (err) {
+        console.warn('Delete expense on backend note:', err);
+      }
+    }
+  } else {
+    // Expense was edited
+    const edited = inMemoryExpenses.find((curr) => {
+      const old = prevList.find((p) => p.id === curr.id);
+      return (
+        old &&
+        (old.amount !== curr.amount ||
+          old.expenseType !== curr.expenseType ||
+          old.notes !== curr.notes ||
+          old.paymode !== curr.paymode)
+      );
+    });
+    if (edited && edited.id && !String(edited.id).startsWith('EXP-')) {
+      try {
+        await expenseApi.updateExpense(edited.id, {
+          amount: Number(edited.amount) || 0,
+          expenseTypeName: edited.expenseType || 'General Expense',
+          paymode: edited.paymode || 'Cash',
+          paymentMethod: edited.paymode || 'Cash',
+          description: edited.notes || '',
+          remark: edited.notes || '',
+        });
+      } catch (err) {
+        console.warn('Update expense on backend note:', err);
+      }
+    }
+  }
+};
+
+export const deleteExpenseItem = async (id) => {
+  purgeLocalExpenses();
+  const isUuid = typeof id === 'string' && id.includes('-');
+  if (isUuid) {
+    try {
+      await expenseApi.deleteExpense(id);
+    } catch (err) {
+      console.warn('Backend delete expense note:', err);
+    }
+  }
+  inMemoryExpenses = inMemoryExpenses.filter((e) => e.id !== id);
+  window.dispatchEvent(new Event('expensesUpdated'));
+  return true;
 };
 
 export const getAccounts = () => {
-  const tenantId = getActiveTenantId();
-  const key = getAccountsStorageKey();
-
-  try {
-    const data = localStorage.getItem(key);
-    if (!data) {
-      let initial = initialAccountsGlamour;
-      if (tenantId === 'tenant_naturals') initial = initialAccountsNaturals;
-      else if (tenantId === 'tenant_enrich') initial = initialAccountsEnrich;
-      else if (tenantId !== 'tenant_glamour') initial = [{ id: 1, name: 'Current Account', type: 'Current', balance: 0 }];
-
-      localStorage.setItem(key, JSON.stringify(initial));
-      return initial;
-    }
-    return JSON.parse(data);
-  } catch (err) {
-    return [];
-  }
+  purgeLocalExpenses();
+  return [...inMemoryAccounts];
 };
 
 export const saveAccounts = (accounts) => {
-  const key = getAccountsStorageKey();
-  try {
-    localStorage.setItem(key, JSON.stringify(accounts));
-    window.dispatchEvent(new Event('accountsUpdated'));
-  } catch (err) {
-    console.error('Failed to save accounts:', err);
-  }
+  purgeLocalExpenses();
+  inMemoryAccounts = Array.isArray(accounts) ? accounts : [];
+  window.dispatchEvent(new Event('accountsUpdated'));
 };
+

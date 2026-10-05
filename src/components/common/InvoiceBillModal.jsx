@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Printer, Download, MessageCircle, CheckCircle2, Sparkles } from 'lucide-react';
+import { X, Printer, MessageCircle, CheckCircle2, Sparkles } from 'lucide-react';
 import { getActiveTenant } from '../../utils/saasStorage';
 import { getPackages } from '../../utils/packageStorage';
 
@@ -201,64 +201,78 @@ const InvoiceBillModal = ({ isOpen, onClose, order }) => {
   const guestGstin = order.guest?.gstNumber || '';
 
   const handleWhatsApp = () => {
+    let cleanPhone = (guestPhone || '').replace(/\D/g, '');
+    if (cleanPhone.length === 10) {
+      cleanPhone = `91${cleanPhone}`;
+    }
+
+    let itemsList = '';
+    let counter = 1;
+
+    if (serviceItems && serviceItems.length > 0) {
+      serviceItems.forEach((it) => {
+        const net = (it.price * (it.qty || 1)) - (parseFloat(it.discAmount) || 0);
+        itemsList += `${counter}. *${it.name}* (Qty: ${it.qty || 1}) - ₹${net}\n`;
+        counter++;
+      });
+    }
+
+    if (packageItems && packageItems.length > 0) {
+      packageItems.forEach((it) => {
+        const net = (it.price * (it.qty || 1)) - (parseFloat(it.discAmount) || 0);
+        itemsList += `${counter}. *${it.name}* (Package) - ₹${net}\n`;
+        counter++;
+      });
+    }
+
+    if (productItems && productItems.length > 0) {
+      productItems.forEach((it) => {
+        const net = (it.price * (it.qty || 1)) - (parseFloat(it.discAmount) || 0);
+        itemsList += `${counter}. *${it.name}* (Qty: ${it.qty || 1}) - ₹${net}\n`;
+        counter++;
+      });
+    }
+
+    if (membershipItems && membershipItems.length > 0) {
+      membershipItems.forEach((it) => {
+        itemsList += `${counter}. *${it.name}* (Membership) - ₹${it.price}\n`;
+        counter++;
+      });
+    }
+
+    const invoiceNum = order.invoiceNo || order.invoiceId || order.id || '1';
+    const dateStr = order.dateDisplay || order.date || 'Recent';
+    const timeStr = order.time ? ` • ${order.time}` : '';
+    const paymentMode = order.paymentMethod || order.paymentMode || 'Paid';
+    const grandTotalVal = Number(order.grandTotal ?? order.subTotal ?? 0).toLocaleString();
+
+    const message = `🧾 *TAX INVOICE / BILL RECEIPT*
+*${companyName.toUpperCase()}*
+📍 ${companyLocation}${displayAddress ? `, ${displayAddress}` : ''}
+${companyPhone ? `📞 ${companyPhone}\n` : ''}${companyGstin ? `GSTIN: ${companyGstin}\n` : ''}
+━━━━━━━━━━━━━━━━━━━━
+👤 *Customer:* ${guestName}
+📱 *Phone:* ${guestPhone || '-'}
+📄 *Invoice ID:* #${invoiceNum}
+📅 *Date:* ${dateStr}${timeStr}
+💳 *Payment:* ${paymentMode} (Completed)
+━━━━━━━━━━━━━━━━━━━━
+*BOOKED SERVICES / ITEMS:*
+${itemsList || '1. Salon Services - ₹' + grandTotalVal + '\n'}━━━━━━━━━━━━━━━━━━━━
+💰 *Grand Total: ₹${grandTotalVal}*
+
+Thank you for visiting *${companyName}*!
+Please retain this receipt for membership & package benefits. ✨`;
+
+    const encodedMsg = encodeURIComponent(message);
+    const whatsappUrl = cleanPhone
+      ? `https://wa.me/${cleanPhone}?text=${encodedMsg}`
+      : `https://wa.me/?text=${encodedMsg}`;
+
+    window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
+
     setWhatsAppSent(true);
     setTimeout(() => setWhatsAppSent(false), 4000);
-  };
-
-  const handleDownload = () => {
-    let textData = `
-================================================
-              ${companyName.toUpperCase()}
-   ${companyLocation}
-   ${displayAddress ? displayAddress + '\n   ' : ''}${companyPhone ? `Phone: ${companyPhone} | ` : ''}${companyEmail || ''}
-   ${companyGstin ? `GSTIN: ${companyGstin}` : ''}
-================================================
-Bill To     : ${guestName}
-Phone       : ${guestPhone || '-'}
-Invoice ID  : #${order.invoiceId || order.invoiceNo || order.id || '1'}
-Date & Time : ${order.dateDisplay || order.date || 'Recent'} ${order.time ? `• ${order.time}` : ''}
-Payment Mode: ${order.paymentMethod || 'Cash'}
-------------------------------------------------`;
-
-    if (serviceItems.length > 0) {
-      textData += `\nBOOKED SERVICES:\n` + serviceItems.map((it, idx) => 
-        `${idx + 1}. ${it.name} | Rate: ₹${it.price} | Net: ₹${(it.price * (it.qty || 1)) - (parseFloat(it.discAmount) || 0)}`
-      ).join('\n');
-    }
-
-    if (packageItems.length > 0) {
-      textData += `\nPACKAGES & INCLUDED SERVICES:\n` + packageItems.map((it, idx) => {
-        const breakdown = getPackageBreakdown(it);
-        const srvLines = breakdown.map(s => `     ✔ ${s}`).join('\n');
-        return `${idx + 1}. ${it.name} (${it.category || 'Package'}) | Validity: ${it.validityDays || 180} Days | Rate: ₹${it.price} | Net: ₹${(it.price * (it.qty || 1)) - (parseFloat(it.discAmount) || 0)}\n   Included Services Allowance:\n${srvLines}`;
-      }).join('\n');
-    }
-
-    if (productItems.length > 0) {
-      textData += `\nPRODUCTS:\n` + productItems.map((it, idx) => 
-        `${idx + 1}. ${it.name} | Rate: ₹${it.price} | Qty: ${it.qty || 1} | Net: ₹${(it.price * (it.qty || 1)) - (parseFloat(it.discAmount) || 0)}`
-      ).join('\n');
-    }
-
-    if (membershipItems.length > 0) {
-      textData += `\nMEMBERSHIPS:\n` + membershipItems.map((it, idx) => 
-        `${idx + 1}. ${it.name} | Rate: ₹${it.price} | Net: ₹${it.price}`
-      ).join('\n');
-    }
-
-    textData += `\n------------------------------------------------
-SubTotal   : ₹${order.subTotal || order.grandTotal || 0}
-Discounts  : ₹${totalDiscount}
-Grand Total: ₹${order.grandTotal || order.subTotal || 0}
-================================================
-`;
-    const element = document.createElement("a");
-    const file = new Blob([textData], { type: 'text/plain' });
-    element.href = URL.createObjectURL(file);
-    element.download = `Invoice-${order.invoiceNo || order.id || 'bill'}.txt`;
-    document.body.appendChild(element);
-    element.click();
-    document.body.removeChild(element);
   };
 
   return (
@@ -306,9 +320,6 @@ Grand Total: ₹${order.grandTotal || order.subTotal || 0}
                     )}
                   </span>
                 )}
-                <span className="text-xs font-semibold px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 ml-2 uppercase">
-                  {tenant?.planName || 'SALON'}
-                </span>
               </div>
               <p className="text-[11px] font-medium text-slate-500 tracking-wide mt-0.5">
                 {tenant?.tagline || 'Excellence in Beauty & Care'}
@@ -541,7 +552,7 @@ Grand Total: ₹${order.grandTotal || order.subTotal || 0}
             <div className="w-64 space-y-1.5 text-xs text-right">
               <div className="flex justify-between text-slate-500">
                 <span>Subtotal:</span>
-                <span className="font-mono font-medium">₹{order.subTotal || order.grandTotal || 0}</span>
+                <span className="font-mono font-medium">₹{order.subTotal ?? order.grandTotal ?? 0}</span>
               </div>
               {totalDiscount > 0 && (
                 <div className="flex justify-between text-rose-500 font-medium">
@@ -574,13 +585,6 @@ Grand Total: ₹${order.grandTotal || order.subTotal || 0}
               <span>Print Bill</span>
             </button>
             <button
-              onClick={handleDownload}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
-            >
-              <Download size={14} />
-              <span>Download</span>
-            </button>
-            <button
               onClick={handleWhatsApp}
               className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer ${
                 whatsAppSent
@@ -589,7 +593,7 @@ Grand Total: ₹${order.grandTotal || order.subTotal || 0}
               }`}
             >
               {whatsAppSent ? <CheckCircle2 size={14} /> : <MessageCircle size={14} />}
-              <span>{whatsAppSent ? 'Receipt Sent!' : 'Share WhatsApp'}</span>
+              <span>{whatsAppSent ? 'WhatsApp Opened!' : 'Share WhatsApp'}</span>
             </button>
           </div>
 

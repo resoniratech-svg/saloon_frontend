@@ -34,7 +34,7 @@ export default function EnquiriesPage() {
       createdOn: '20-Aug-2026',
       followUp: '26-Aug-2026',
       lastUpdatedOn: '21-Aug-2026',
-      lastUpdatedBy: 'Respark Trial'
+      lastUpdatedBy: 'Siri H'
     },
     {
       id: 2,
@@ -80,7 +80,7 @@ export default function EnquiriesPage() {
       createdOn: '26-Aug-2026',
       followUp: form.followUpDate,
       lastUpdatedOn: '26-Aug-2026',
-      lastUpdatedBy: 'Respark Trial'
+      lastUpdatedBy: 'Siri H'
     };
     setEnquiries([newEnq, ...enquiries]);
     setShowAddModal(false);
@@ -94,7 +94,7 @@ export default function EnquiriesPage() {
       followUp: form.followUpDate,
       description: form.description,
       lastUpdatedOn: '26-Aug-2026',
-      lastUpdatedBy: 'Respark Trial'
+      lastUpdatedBy: 'Siri H'
     } : enq));
     setShowEditModal(false);
   };

@@ -7,7 +7,8 @@ import {
   getCashierPermissions,
   isPlanFeatureAllowed,
   isImpersonating,
-  stopImpersonation
+  stopImpersonation,
+  syncActiveTenantBranding
 } from '../../utils/saasStorage';
 import { getCashiersForTenant } from '../../utils/cashierStorage';
 
@@ -61,6 +62,15 @@ const TopNavBar = ({ onMenuClick }) => {
     };
   }, []);
 
+  // Sync active tenant branding (including company logo from PostgreSQL)
+  useEffect(() => {
+    syncActiveTenantBranding(tenant?.id).then(synced => {
+      if (synced) {
+        setTenant(synced);
+      }
+    });
+  }, [tenant?.id]);
+
   const allTabs = [
     { name: 'POS', path: '/pos', key: 'pos' },
     { name: 'APPOINTMENT', path: '/appointment', key: 'appointment' },
@@ -68,7 +78,6 @@ const TopNavBar = ({ onMenuClick }) => {
     { name: 'CASH MGMT', path: '/cash-mgmt', key: 'cashMgmt' },
     { name: 'REPORTS', path: '/reports', key: 'reports', adminOnly: true },
     { name: 'INVENTORY', path: '/inventory', key: 'inventory', adminOnly: true },
-    { name: 'DISPOSABLES', path: '/disposables', key: 'disposables', adminOnly: true },
     { name: 'TRENDS', path: '/trends', key: 'trends', adminOnly: true },
   ];
 
@@ -141,18 +150,44 @@ const TopNavBar = ({ onMenuClick }) => {
           </button>
           
           <div className="flex items-center gap-2 sm:gap-2.5">
-            {tenant?.logoUrl ? (
+            {tenant?.logoUrl && (
               <img
                 src={tenant.logoUrl}
                 alt={tenant.companyName || 'Logo'}
-                className="h-8 max-w-[130px] object-contain rounded bg-white/10 p-0.5"
+                className="h-8 max-w-[130px] object-contain rounded bg-white/10 p-0.5 shrink-0"
               />
-            ) : (
-              <span className="text-xl font-extrabold tracking-tight select-none">
-                <span className="text-white">{tenant?.logoTextPrefix || 'GLA'}</span>
-                <span className="text-rose-400">{tenant?.logoTextSuffix || 'MOUR'}</span>
-              </span>
             )}
+
+            {/* Brand Name of Company */}
+            <span className="text-base sm:text-lg font-black tracking-tight select-none uppercase whitespace-nowrap">
+              {(() => {
+                if (tenant?.logoTextPrefix) {
+                  return (
+                    <>
+                      <span className="text-white">{tenant.logoTextPrefix}</span>
+                      <span className="text-rose-400">{tenant.logoTextSuffix || ''}</span>
+                    </>
+                  );
+                }
+                const name = (tenant?.brandName || tenant?.companyName || tenant?.name || 'SALON').trim();
+                const parts = name.split(' ');
+                if (parts.length > 1) {
+                  return (
+                    <>
+                      <span className="text-white">{parts[0]} </span>
+                      <span className="text-rose-400">{parts.slice(1).join(' ')}</span>
+                    </>
+                  );
+                }
+                const mid = Math.ceil(name.length / 2);
+                return (
+                  <>
+                    <span className="text-white">{name.slice(0, mid)}</span>
+                    <span className="text-rose-400">{name.slice(mid)}</span>
+                  </>
+                );
+              })()}
+            </span>
 
             {/* Company Location Pill */}
             <div 

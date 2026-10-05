@@ -3,7 +3,7 @@ import {
   Search, Calendar, User, Eye, Check, X, Clock, CheckCircle2, AlertCircle, 
   Phone, Printer, Download, MessageCircle, Ticket, Trash2, LayoutGrid, List 
 } from 'lucide-react';
-import { getOrders, updateOrderStatus, deleteOrderInStore } from '../utils/orderStorage';
+import { getOrders, updateOrderStatus, deleteOrderInStore, syncOrdersFromBackend } from '../utils/orderStorage';
 import { getActiveTenant } from '../utils/saasStorage';
 import POSUpdateOrderModal from '../components/pos/POSUpdateOrderModal';
 
@@ -199,12 +199,9 @@ Status: ${order.status}
                     <span className="text-indigo-600">{companyName}</span>
                   )}
                 </span>
-                <span className="text-xs font-semibold px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 ml-2 uppercase">
-                  {tenant?.planName || 'RESPARK'}
-                </span>
               </div>
               <p className="text-[11px] font-medium text-slate-500 tracking-wide mt-0.5">
-                {tenant?.tagline || 'Manage Smarter, Grow Faster'}
+                {tenant?.tagline || 'Excellence in Beauty & Care'}
               </p>
             </div>
 
@@ -452,8 +449,9 @@ const POSDashboardPage = () => {
   const [activeTab, setActiveTab] = useState('Total');
   const [viewMode, setViewMode] = useState('cards'); // 'cards' (matches screenshot 1) or 'table'
   const [orders, setOrders] = useState([]);
-  const [startDate, setStartDate] = useState('2026-09-18');
-  const [endDate, setEndDate] = useState('2026-09-18');
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const [startDate, setStartDate] = useState(todayIso);
+  const [endDate, setEndDate] = useState(todayIso);
   const [isDateFiltered, setIsDateFiltered] = useState(false);
   
   // Modals state
@@ -473,6 +471,7 @@ const POSDashboardPage = () => {
 
   useEffect(() => {
     loadOrders();
+    syncOrdersFromBackend().then(() => loadOrders()).catch(() => {});
     const handleSync = () => loadOrders();
     window.addEventListener('ordersUpdated', handleSync);
     window.addEventListener('tenantChanged', handleSync);
@@ -529,10 +528,11 @@ const POSDashboardPage = () => {
   };
 
   // Delete / Cancel order (red trash icon in Screenshot 1)
-  const handleDeleteOrder = (orderId) => {
-    if (window.confirm('Are you sure you want to delete this order?')) {
-      const updated = deleteOrderInStore(orderId);
+  const handleDeleteOrder = async (orderId) => {
+    if (window.confirm('Are you sure you want to permanently delete this order from the database?')) {
+      const updated = await deleteOrderInStore(orderId);
       setOrders(updated);
+      await loadOrders();
     }
   };
 

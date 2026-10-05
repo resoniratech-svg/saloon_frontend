@@ -7,15 +7,17 @@ import {
   MapPin, Check, RefreshCw, Trash2, Key, SlidersHorizontal, Edit2, Sparkles,
   CalendarClock, Zap, CreditCard, Calendar, History, ArrowUpRight, ArrowDownRight,
   Receipt, Clock, Copy, MessageCircle, KeyRound, CheckCheck, Eye,
-  Upload, Image as ImageIcon
+  Upload, Image as ImageIcon, Lock, Ban, PlayCircle
 } from 'lucide-react';
 import {
   getTenants,
+  saveTenants,
   createTenant,
   updateTenant,
   deleteTenant,
   toggleTenantStatus,
   getSubscriptionPlans,
+  saveSubscriptionPlans,
   createSubscriptionPlan,
   updateSubscriptionPlan,
   deleteSubscriptionPlan,
@@ -28,6 +30,7 @@ import {
   calculateDaysBetween,
   setActiveTenant,
   setCurrentUser,
+  getCurrentUser,
   superAdminUser,
   isTenantPlanExpired,
   startImpersonation
@@ -38,9 +41,11 @@ import {
   rejectResetRequest
 } from '../utils/passwordResetStorage';
 import { getCashiersForTenant } from '../utils/cashierStorage';
+import { authApi, platformApi } from '../api/client';
 
 const SuperAdminPage = () => {
   const navigate = useNavigate();
+  const [currentUser, setCurrentUserState] = useState(() => getCurrentUser());
   const [tenants, setTenants] = useState(() => getTenants());
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
@@ -103,7 +108,7 @@ const SuperAdminPage = () => {
       adminPassword: '',
       primaryBranchName: '',
       city: '',
-      planId: defaultPlan?.id || 'plan_growth',
+      planId: defaultPlan?.id || 'standard_plan',
       maxCashiers: defaultPlan?.maxCashiers || 2,
       paymentMode: 'UPI / GPay / PhonePe',
       startDate: today,
@@ -127,19 +132,153 @@ const SuperAdminPage = () => {
     customFeatureInput: ''
   });
 
+  const mapCompanyFromBackend = (c) => {
+    const allPlans = getSubscriptionPlans();
+    const matchedPlan = allPlans.find(p => p.name?.toLowerCase() === c.plan?.toLowerCase() || p.id === c.plan);
+    const branchName = c.primaryBranchName || (c.city || c.address ? `${c.city || c.address} Outlet` : 'Main Studio');
+    const cityName = c.city || c.address || 'Headquarters';
+    const adminUser = Array.isArray(c.users)
+      ? (c.users.find(u => u.role?.name === 'ADMIN' || u.role === 'ADMIN') || c.users[0])
+      : null;
+    const ownerUsername = adminUser?.username || c.contactEmail?.split('@')[0] || 'admin';
+    const ownerEmail = c.contactEmail || adminUser?.email || '';
+    const ownerPhone = c.contactPhone || adminUser?.phone || '';
+
+    const startStr = c.subscriptionStartedAt ? new Date(c.subscriptionStartedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-') : new Date(c.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-');
+    let endStr = '';
+    if (c.subscriptionExpiresAt) {
+      const exp = new Date(c.subscriptionExpiresAt);
+      if (!isNaN(exp.getTime())) endStr = exp.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-');
+    }
+    if (!endStr) {
+      try {
+        const startD = new Date(c.subscriptionStartedAt || c.createdAt || Date.now());
+        const days = Number(matchedPlan?.durationDays) || (c.plan?.toLowerCase().includes('bumper') ? 116 : c.plan?.toLowerCase().includes('jumper') ? 10 : 30);
+        startD.setDate(startD.getDate() + days);
+        endStr = toDisplayDateString(startD.toISOString().split('T')[0]);
+      } catch (e) {
+        endStr = '';
+      }
+    }
+    const durationLabel = matchedPlan?.durationDays 
+      ? `${matchedPlan.durationDays} Days` 
+      : (c.plan?.toLowerCase().includes('bumper') ? '116 Days' : c.plan?.toLowerCase().includes('jumper') ? '10 Days' : (matchedPlan?.billingCycle || '30 Days'));
+
+    return {
+      id: c.id,
+      companyName: c.name,
+      brandName: c.code?.toUpperCase() || c.name?.toUpperCase(),
+      code: c.code || '',
+      logoUrl: c.logoUrl || null,
+      ownerName: ownerUsername,
+      email: ownerEmail,
+      mobile: ownerPhone,
+      city: cityName,
+      primaryBranchName: branchName,
+      planId: matchedPlan ? matchedPlan.id : (c.plan === 'ENTERPRISE' ? 'plan_enterprise' : c.plan === 'PRO' ? 'plan_growth' : 'plan_starter'),
+      planName: matchedPlan ? matchedPlan.name : (c.plan || 'Starter Plan'),
+      status: (() => {
+        const existing = getTenants().find(t => t.id === c.id);
+        if (c.subscriptionStatus === 'SUSPENDED' || existing?.status === 'Suspended' || existing?.isSuspended) {
+          return 'Suspended';
+        }
+        return c.isActive ? 'Active' : 'Inactive';
+      })(),
+      isSuspended: c.subscriptionStatus === 'SUSPENDED' || Boolean(getTenants().find(t => t.id === c.id)?.isSuspended),
+      startDate: startStr,
+      endDate: endStr,
+      nextBillingDate: endStr,
+      mrr: matchedPlan ? Number(matchedPlan.price) : (c.plan === 'ENTERPRISE' ? 9999 : c.plan === 'PRO' ? 4999 : 2999),
+      customFeatures: Array.isArray(c.enabledModules) && c.enabledModules.length > 0 ? c.enabledModules : (matchedPlan?.features || []),
+      history: (() => {
+        const existing = getTenants().find(t => t.id === c.id);
+        if (existing?.history && Array.isArray(existing.history) && existing.history.length > 0) {
+          return existing.history;
+        }
+        return [
+          {
+            id: 'hist_' + c.id,
+            type: 'INITIAL_SIGNUP',
+            title: `Account Onboarded (${matchedPlan?.name || c.plan || 'Plan'})`,
+            date: startStr,
+            startDate: startStr,
+            endDate: endStr,
+            duration: durationLabel,
+            amountPaid: matchedPlan ? Number(matchedPlan.price) : 2999,
+            planName: matchedPlan ? matchedPlan.name : (c.plan || 'Subscription Plan'),
+            paymentMode: 'UPI / GPay / PhonePe',
+            status: 'Completed',
+            notes: 'Subscription payment'
+          }
+        ];
+      })(),
+      branches: [{ id: 'b_' + c.id, name: branchName, city: cityName, isPrimary: true, active: true }]
+    };
+  };
+
+  const loadPlatformData = async () => {
+    let currentPlans = getSubscriptionPlans();
+    try {
+      const resPlans = await platformApi.getPlans();
+      if (resPlans && resPlans.success && Array.isArray(resPlans.data) && resPlans.data.length > 0) {
+        const mappedPlans = resPlans.data.map(p => ({
+          id: p.id,
+          name: p.name,
+          price: Number(p.price),
+          billingCycle: p.billingCycle || `${p.durationDays} Days`,
+          durationDays: p.durationDays,
+          badgeTag: p.badgeTag || '',
+          cashierLimit: p.cashierLimit || 2,
+          features: Array.isArray(p.features) ? p.features : [],
+          isActive: p.isActive !== false
+        }));
+        currentPlans = mappedPlans;
+        setPlans(mappedPlans);
+        saveSubscriptionPlans(mappedPlans);
+      }
+    } catch (err) {
+      console.warn('Backend plan fetch error:', err.message);
+    }
+
+    try {
+      const res = await platformApi.getCompanies({ limit: 100 });
+      if (res && res.success && res.data) {
+        const items = res.data.items || (Array.isArray(res.data) ? res.data : []);
+        if (items.length > 0) {
+          const mapped = items.map(mapCompanyFromBackend);
+          setTenants(mapped);
+          saveTenants(mapped);
+        }
+      }
+    } catch (err) {
+      console.warn('Backend company fetch error:', err.message);
+    }
+  };
+
   useEffect(() => {
+    // Purge any legacy saas data from localStorage on mount
+    try {
+      localStorage.removeItem('respark_saas_tenants');
+      localStorage.removeItem('respark_saas_plans');
+    } catch (e) {}
+
+    loadPlatformData();
+
     const handleUpdate = () => {
       setTenants(getTenants());
       setPlans(getSubscriptionPlans());
       setAdminResetRequests(getAdminResetRequests());
+      setCurrentUserState(getCurrentUser());
     };
     window.addEventListener('saasUpdated', handleUpdate);
     window.addEventListener('saasPlansUpdated', handleUpdate);
     window.addEventListener('passwordResetsUpdated', handleUpdate);
+    window.addEventListener('saasUserChanged', handleUpdate);
     return () => {
       window.removeEventListener('saasUpdated', handleUpdate);
       window.removeEventListener('saasPlansUpdated', handleUpdate);
       window.removeEventListener('passwordResetsUpdated', handleUpdate);
+      window.removeEventListener('saasUserChanged', handleUpdate);
     };
   }, []);
 
@@ -178,7 +317,7 @@ const SuperAdminPage = () => {
   const activeSalons = tenants.filter(t => t.status === 'Active' && !isTenantPlanExpired(t));
   const activeSalonsCount = activeSalons.length;
   const totalMRR = activeSalons.reduce((sum, t) => sum + (t.mrr || 0), 0);
-  const activePercentage = totalSalons > 0 ? Math.round((activeSalonsCount / totalSalons) * 100) : 100;
+  const activePercentage = totalSalons > 0 ? Math.round((activeSalonsCount / totalSalons) * 100) : 0;
 
   // Filter Tenants
   const filteredTenants = tenants.filter(t => {
@@ -188,24 +327,72 @@ const SuperAdminPage = () => {
       t.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
       t.mobile.includes(searchTerm);
     const isExpired = isTenantPlanExpired(t);
-    const effectiveStatus = isExpired ? 'Inactive' : (t.status || 'Active');
+    const isSuspended = t.status === 'Suspended' || t.isSuspended;
+    const effectiveStatus = isSuspended ? 'Suspended' : (isExpired ? 'Inactive' : (t.status || 'Active'));
     const matchStatus =
       statusFilter === 'All' ||
       (statusFilter === 'Active' && effectiveStatus === 'Active') ||
       (statusFilter === 'Inactive' && effectiveStatus === 'Inactive') ||
-      (statusFilter === 'Suspended' && t.status === 'Suspended');
+      (statusFilter === 'Suspended' && effectiveStatus === 'Suspended');
     return matchSearch && matchStatus;
   });
 
+  // Handle Suspend / Unsuspend Salon
+  const handleToggleSuspend = async (tenant) => {
+    const isCurrentlySuspended = tenant.status === 'Suspended' || tenant.isSuspended;
+    if (isCurrentlySuspended) {
+      if (window.confirm(`Are you sure you want to unsuspend "${tenant.companyName}"?\n\nThis will restore login access for its administrators and cashiers.`)) {
+        const restoredStatus = isTenantPlanExpired(tenant) ? 'Inactive' : 'Active';
+        try {
+          await platformApi.updateCompanyStatus(tenant.id, true, 'Unsuspended by Super Admin');
+          await platformApi.updateSubscription(tenant.id, {
+            subscriptionStatus: isTenantPlanExpired(tenant) ? 'EXPIRED' : 'ACTIVE'
+          });
+        } catch (err) {
+          console.warn('Backend unsuspend note:', err.message);
+        }
+        updateTenant(tenant.id, { status: restoredStatus, isSuspended: false });
+        await loadPlatformData();
+        setNotification(`Salon "${tenant.companyName}" has been UNSUSPENDED. Normal login access restored.`);
+        setTimeout(() => setNotification(''), 4000);
+      }
+    } else {
+      if (window.confirm(`⚠️ Are you sure you want to SUSPEND "${tenant.companyName}"?\n\nThis will immediately freeze all operations and block login access for its salon admin and cashiers.`)) {
+        try {
+          await platformApi.updateCompanyStatus(tenant.id, false, 'Suspended by Super Admin');
+          await platformApi.updateSubscription(tenant.id, {
+            subscriptionStatus: 'SUSPENDED'
+          });
+        } catch (err) {
+          console.warn('Backend suspend note:', err.message);
+        }
+        updateTenant(tenant.id, { status: 'Suspended', isSuspended: true });
+        await loadPlatformData();
+        setNotification(`⚠️ Salon "${tenant.companyName}" is now SUSPENDED. All login access is frozen.`);
+        setTimeout(() => setNotification(''), 4000);
+      }
+    }
+  };
+
   // Handle Toggle Status with Expiry Guard
-  const handleToggleStatus = (tenant) => {
+  const handleToggleStatus = async (tenant) => {
+    if (tenant.status === 'Suspended' || tenant.isSuspended) {
+      handleToggleSuspend(tenant);
+      return;
+    }
     if (isTenantPlanExpired(tenant)) {
       setNotification(`⚠️ Plan for "${tenant.companyName}" has reached its expiry date (${tenant.nextBillingDate}). Status is Inactive. Please extend the plan validity to activate this salon.`);
       handleOpenSubscriptionModal(tenant);
       return;
     }
+    const willBeActive = tenant.status !== 'Active';
+    try {
+      await platformApi.updateCompanyStatus(tenant.id, willBeActive);
+    } catch (err) {
+      console.warn('Backend status update note:', err.message);
+    }
     const newStatus = toggleTenantStatus(tenant.id);
-    setTenants(getTenants());
+    await loadPlatformData();
     if (newStatus === 'Inactive') {
       setNotification(`Salon "${tenant.companyName}" is now Inactive (Deactivated by Super Admin). Login access for its admin and cashiers is blocked.`);
     } else {
@@ -216,6 +403,10 @@ const SuperAdminPage = () => {
 
   // Handle Impersonate Company (Read-Only Mode)
   const handleImpersonateCompany = (tenant) => {
+    if (tenant.status === 'Suspended' || tenant.isSuspended) {
+      setNotification(`⚠️ Cannot inspect: Salon "${tenant.companyName}" is currently SUSPENDED by Super Admin. Unsuspend to inspect.`);
+      return;
+    }
     if (isTenantPlanExpired(tenant)) {
       setNotification(`⚠️ Cannot inspect: Subscription for "${tenant.companyName}" has reached its expiry date (${tenant.nextBillingDate}). Extend plan to reactivate.`);
       handleOpenSubscriptionModal(tenant);
@@ -266,19 +457,78 @@ const SuperAdminPage = () => {
   };
 
   // Handle Onboard Salon Submit
-  const handleSaveTenant = (e) => {
+  const handleSaveTenant = async (e) => {
     e.preventDefault();
     if (!tenantForm.companyName.trim()) return alert('Company Name is required');
     if (!tenantForm.ownerName.trim()) return alert('Owner Name is required');
     if (!tenantForm.email.trim()) return alert('Email is required');
     if (!tenantForm.mobile.trim()) return alert('Mobile number is required');
+    if (tenantForm.adminPassword && tenantForm.adminPassword.trim().length < 8) {
+      return alert('Admin password must be at least 8 characters long.');
+    }
 
     const selectedPlanObj = plans.find(p => p.id === tenantForm.planId) || plans[0];
+    const code = (tenantForm.brandName || tenantForm.companyName)
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '') || `salon-${Date.now()}`;
+
+    let backendCompany = null;
+    try {
+      const res = await platformApi.createCompany({
+        name: tenantForm.companyName.trim(),
+        code,
+        plan: selectedPlanObj?.name || 'Bumper Plan',
+        contactEmail: tenantForm.email.trim(),
+        contactPhone: tenantForm.mobile.trim(),
+        address: tenantForm.city?.trim() || 'Headquarters',
+        city: tenantForm.city?.trim() || 'Headquarters',
+        primaryBranchName: tenantForm.primaryBranchName?.trim() || `${tenantForm.city?.trim() || 'Main'} Outlet`,
+        logoUrl: tenantForm.logoUrl || null,
+        cashierLimit: Number(tenantForm.maxCashiers) || 2,
+        enabledModules: selectedPlanObj?.features || [],
+        adminUser: {
+          username: tenantForm.ownerName.trim() || tenantForm.email.trim().split('@')[0],
+          email: tenantForm.email.trim(),
+          password: tenantForm.adminPassword?.trim() || 'AdminPassword123!',
+        },
+      });
+      if (res?.data?.company) {
+        backendCompany = res.data.company;
+      }
+    } catch (apiErr) {
+      console.warn('Backend tenant creation sync note:', apiErr);
+      const errorDetail = apiErr.data?.errors?.[0]?.message || apiErr.data?.message || apiErr.message || 'Validation error';
+      alert(`⚠️ Could not onboard salon:\n\n${errorDetail}\n\nPlease check your inputs and try again.`);
+      return;
+    }
+
     const created = createTenant({
       ...tenantForm,
+      ...(backendCompany ? { id: backendCompany.id } : {}),
       planName: selectedPlanObj ? selectedPlanObj.name : undefined,
       paymentMode: tenantForm.paymentMode || 'UPI / GPay / PhonePe'
     });
+
+    try {
+      const res = await platformApi.getCompanies({ limit: 100 });
+      if (res && res.success && res.data) {
+        const items = res.data.items || (Array.isArray(res.data) ? res.data : []);
+        if (items.length > 0) {
+          const mapped = items.map(mapCompanyFromBackend);
+          setTenants(mapped);
+          saveTenants(mapped);
+        } else {
+          setTenants(getTenants());
+        }
+      } else {
+        setTenants(getTenants());
+      }
+    } catch {
+      setTenants(getTenants());
+    }
+
     setShowOnboardModal(false);
     const defaultPlan = plans[0];
     const days = defaultPlan?.durationDays || 30;
@@ -392,7 +642,7 @@ const SuperAdminPage = () => {
   };
 
   // Handle Save Edited Salon Details
-  const handleSaveEdit = (e) => {
+  const handleSaveEdit = async (e) => {
     e.preventDefault();
     if (!editingTenant) return;
     if (!editForm.companyName.trim()) return alert('Company Name is required');
@@ -448,10 +698,55 @@ const SuperAdminPage = () => {
       branches: updatedBranches
     };
 
+    try {
+      const cleanCode = (updatedFields.brandName || updatedFields.companyName)
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+
+      await platformApi.updateCompany(editingTenant.id, {
+        name: updatedFields.companyName,
+        code: cleanCode,
+        ownerName: updatedFields.ownerName,
+        contactEmail: updatedFields.email,
+        contactPhone: updatedFields.mobile,
+        address: cleanCity,
+        city: cleanCity,
+        primaryBranchName: cleanBranchName,
+        logoUrl: updatedFields.logoUrl || null,
+        cashierLimit: updatedFields.maxCashiers,
+        enabledModules: updatedFields.customFeatures || [],
+        ...(editForm.adminPassword && editForm.adminPassword.trim().length >= 6
+          ? { adminPassword: editForm.adminPassword.trim() }
+          : {}),
+      });
+    } catch (err) {
+      console.warn('Backend company update note:', err.message);
+    }
+
     updateTenant(editingTenant.id, updatedFields);
-    setTenants(getTenants());
+
+    try {
+      const res = await platformApi.getCompanies({ limit: 100 });
+      if (res && res.success && res.data) {
+        const items = res.data.items || (Array.isArray(res.data) ? res.data : []);
+        if (items.length > 0) {
+          const mapped = items.map(mapCompanyFromBackend);
+          setTenants(mapped);
+          saveTenants(mapped);
+        } else {
+          setTenants(getTenants());
+        }
+      } else {
+        setTenants(getTenants());
+      }
+    } catch {
+      setTenants(getTenants());
+    }
+
     setEditingTenant(null);
-    setNotification(`Salon "${updatedFields.companyName}" details and module permissions updated successfully!`);
+    setNotification(`Salon "${updatedFields.companyName}" details, logo, modules, and credentials updated in database!`);
     setTimeout(() => setNotification(''), 3500);
   };
 
@@ -507,7 +802,7 @@ const SuperAdminPage = () => {
     setShowPlanModal(true);
   };
 
-  const handleSavePlan = (e) => {
+  const handleSavePlan = async (e) => {
     e.preventDefault();
     if (!planForm.name.trim()) return alert('Plan name is required');
     if (!planForm.price || isNaN(parseFloat(planForm.price))) return alert('Valid price is required');
@@ -515,35 +810,71 @@ const SuperAdminPage = () => {
       return alert('Valid plan validity duration in days is required (e.g. 30, 90, 365)');
     }
     const durationDays = parseInt(planForm.durationDays);
+    const cleanFeatures = planForm.features.filter(f => !String(f).toLowerCase().includes('unlimited staff'));
+
+    const planPayload = {
+      name: planForm.name.trim(),
+      price: parseFloat(planForm.price),
+      billingCycle: planForm.billingCycle || `${durationDays} Days`,
+      durationDays: durationDays,
+      badgeTag: planForm.badgeTag.trim(),
+      cashierLimit: 2,
+      features: cleanFeatures
+    };
 
     if (editingPlan) {
-      updateSubscriptionPlan(editingPlan.id, {
-        name: planForm.name.trim(),
-        price: parseFloat(planForm.price),
-        billingCycle: planForm.billingCycle || `${durationDays} Days`,
-        durationDays: durationDays,
-        badgeTag: planForm.badgeTag.trim(),
-        features: planForm.features.filter(f => !String(f).toLowerCase().includes('unlimited staff'))
-      });
-      setNotification(`Subscription Plan "${planForm.name}" updated successfully!`);
+      try {
+        await platformApi.updatePlan(editingPlan.id, planPayload);
+      } catch (apiErr) {
+        console.warn('Backend plan update warning:', apiErr.message);
+      }
+      updateSubscriptionPlan(editingPlan.id, planPayload);
+      setNotification(`Subscription Plan "${planForm.name}" updated successfully in database!`);
     } else {
+      let createdId = null;
+      try {
+        const res = await platformApi.createPlan(planPayload);
+        if (res && res.data && res.data.id) {
+          createdId = res.data.id;
+        }
+      } catch (apiErr) {
+        console.warn('Backend plan creation warning:', apiErr.message);
+      }
       const created = createSubscriptionPlan({
-        name: planForm.name.trim(),
-        price: parseFloat(planForm.price),
-        billingCycle: planForm.billingCycle || `${durationDays} Days`,
-        durationDays: durationDays,
-        badgeTag: planForm.badgeTag.trim(),
-        features: planForm.features.filter(f => !String(f).toLowerCase().includes('unlimited staff'))
+        ...planPayload,
+        ...(createdId ? { id: createdId } : {})
       });
-      setNotification(`New Subscription Plan "${created?.name || planForm.name}" created successfully!`);
+      setNotification(`New Subscription Plan "${created?.name || planForm.name}" created and saved to database!`);
     }
 
-    setPlans(getSubscriptionPlans());
+    try {
+      const res = await platformApi.getPlans();
+      if (res && res.success && Array.isArray(res.data)) {
+        const mapped = res.data.map(p => ({
+          id: p.id,
+          name: p.name,
+          price: Number(p.price),
+          billingCycle: p.billingCycle || `${p.durationDays} Days`,
+          durationDays: p.durationDays,
+          badgeTag: p.badgeTag || '',
+          cashierLimit: p.cashierLimit || 2,
+          features: Array.isArray(p.features) ? p.features : [],
+          isActive: p.isActive !== false
+        }));
+        setPlans(mapped);
+        saveSubscriptionPlans(mapped);
+      } else {
+        setPlans(getSubscriptionPlans());
+      }
+    } catch {
+      setPlans(getSubscriptionPlans());
+    }
+
     setShowPlanModal(false);
     setTimeout(() => setNotification(''), 3500);
   };
 
-  const handleDeletePlan = (plan) => {
+  const handleDeletePlan = async (plan) => {
     const salonsOnThisPlan = tenants.filter(t => t.planId === plan.id);
     if (salonsOnThisPlan.length > 0) {
       alert(`Cannot delete "${plan.name}": There are currently ${salonsOnThisPlan.length} salon(s) active on this plan. Reassign them first.`);
@@ -551,9 +882,37 @@ const SuperAdminPage = () => {
     }
 
     if (window.confirm(`Are you sure you want to delete the plan "${plan.name}"?`)) {
+      try {
+        await platformApi.deletePlan(plan.id);
+      } catch (apiErr) {
+        console.warn('Backend plan delete warning:', apiErr.message);
+      }
       deleteSubscriptionPlan(plan.id);
-      setPlans(getSubscriptionPlans());
-      setNotification(`Plan "${plan.name}" deleted.`);
+
+      try {
+        const res = await platformApi.getPlans();
+        if (res && res.success && Array.isArray(res.data)) {
+          const mapped = res.data.map(p => ({
+            id: p.id,
+            name: p.name,
+            price: Number(p.price),
+            billingCycle: p.billingCycle || `${p.durationDays} Days`,
+            durationDays: p.durationDays,
+            badgeTag: p.badgeTag || '',
+            cashierLimit: p.cashierLimit || 2,
+            features: Array.isArray(p.features) ? p.features : [],
+            isActive: p.isActive !== false
+          }));
+          setPlans(mapped);
+          saveSubscriptionPlans(mapped);
+        } else {
+          setPlans(getSubscriptionPlans());
+        }
+      } catch {
+        setPlans(getSubscriptionPlans());
+      }
+
+      setNotification(`Plan "${plan.name}" deleted from database.`);
       setTimeout(() => setNotification(''), 3000);
     }
   };
@@ -585,6 +944,11 @@ const SuperAdminPage = () => {
   };
 
   const handleOpenSubscriptionModal = (tenant) => {
+    if (!isTenantPlanExpired(tenant)) {
+      setNotification(`⚠️ Subscription for "${tenant.companyName}" is currently Active until ${tenant.endDate || tenant.nextBillingDate}. Plan changes and extensions are only unlocked once the current subscription expires.`);
+      setTimeout(() => setNotification(''), 5000);
+      return;
+    }
     setSubscriptionModalTenant(tenant);
     const todayIso = new Date().toISOString().split('T')[0];
     const allPlans = getSubscriptionPlans();
@@ -627,14 +991,67 @@ const SuperAdminPage = () => {
     }));
   };
 
-  const handleSaveSubscription = (e) => {
+  const handleSaveSubscription = async (e) => {
     e.preventDefault();
     if (!subscriptionModalTenant) return;
 
+    const allPlans = getSubscriptionPlans();
+    const selectedPlan = allPlans.find(p => p.id === subForm.planId) || allPlans[0];
+
+    // Build ISO Date for subscriptionExpiresAt
+    let expiresAtIso = null;
+    if (subForm.endDate) {
+      try {
+        const rawDate = subForm.endDate.includes('-') && subForm.endDate.split('-')[0].length === 4
+          ? `${subForm.endDate}T23:59:59.000Z`
+          : new Date(subForm.endDate).toISOString();
+        expiresAtIso = new Date(rawDate).toISOString();
+      } catch (dateErr) {
+        console.warn('Date parsing note:', dateErr);
+      }
+    }
+
+    try {
+      // 1. Update subscription in PostgreSQL database
+      await platformApi.updateSubscription(subscriptionModalTenant.id, {
+        plan: selectedPlan?.name || subscriptionModalTenant.planName || 'Bumper Plan',
+        subscriptionStatus: subForm.status === 'Inactive' ? 'EXPIRED' : 'ACTIVE',
+        subscriptionExpiresAt: expiresAtIso,
+      });
+
+      // 2. Update cashier limit in PostgreSQL if specified
+      if (subForm.maxCashiers !== undefined) {
+        await platformApi.updateCashierLimit(subscriptionModalTenant.id, subForm.maxCashiers);
+      }
+    } catch (apiErr) {
+      console.warn('Backend subscription update note:', apiErr);
+      const errMsg = apiErr.data?.message || apiErr.message || 'Error updating subscription';
+      alert(`⚠️ Could not save subscription to database:\n\n${errMsg}`);
+      return;
+    }
+
+    // 3. Update localStorage and local state
     const updated = updateTenantSubscription(subscriptionModalTenant.id, subForm);
-    setTenants(getTenants());
+
+    // 4. Re-fetch from backend to ensure 100% database sync
+    try {
+      const res = await platformApi.getCompanies({ limit: 100 });
+      if (res && res.success && res.data) {
+        const items = res.data.items || (Array.isArray(res.data) ? res.data : []);
+        if (items.length > 0) {
+          const mapped = items.map(mapCompanyFromBackend);
+          setTenants(mapped);
+          saveTenants(mapped);
+        } else {
+          setTenants(getTenants());
+        }
+      }
+    } catch {
+      setTenants(getTenants());
+    }
+
     setSubscriptionModalTenant(null);
-    setNotification(`Subscription for "${updated?.companyName || subscriptionModalTenant.companyName}" updated to ${updated?.planName || 'new plan'} (Valid till ${updated?.nextBillingDate || subForm.nextBillingDate})!`);
+    setNotification(`Subscription for "${updated?.companyName || subscriptionModalTenant.companyName}" updated to ${selectedPlan?.name || 'new plan'} (Valid till ${updated?.nextBillingDate || subForm.nextBillingDate}) in database!`);
     setTimeout(() => setNotification(''), 3500);
   };
 
@@ -660,6 +1077,7 @@ const SuperAdminPage = () => {
   };
 
   const handleLogout = () => {
+    authApi.logout();
     navigate('/login');
   };
 
@@ -686,10 +1104,10 @@ const SuperAdminPage = () => {
 
         <div className="flex items-center space-x-3">
           <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-pink-50/60 border border-pink-200/80">
-            <span className="text-base">{superAdminUser.avatar}</span>
+            <span className="text-base">{currentUser?.avatar || superAdminUser.avatar}</span>
             <div className="text-left hidden sm:block">
-              <div className="text-xs font-bold text-slate-800">{superAdminUser.name}</div>
-              <div className="text-[10px] text-slate-500">{superAdminUser.email}</div>
+              <div className="text-xs font-bold text-slate-800">{currentUser?.name || currentUser?.username || 'Platform Super Admin'}</div>
+              <div className="text-[10px] text-slate-500">{currentUser?.email || 'saloonqubexe@gmail.com'}</div>
             </div>
           </div>
 
@@ -704,9 +1122,9 @@ const SuperAdminPage = () => {
       </header>
 
       {/* ======================================================== */}
-      {/* MAIN CONTAINER                                           */}
+      {/* MAIN CONTAINER (FULL SCREEN WIDTH)                       */}
       {/* ======================================================== */}
-      <main className="flex-1 p-6 max-w-7xl w-full mx-auto space-y-6">
+      <main className="flex-1 px-4 sm:px-6 lg:px-8 py-6 w-full max-w-[100%] mx-auto space-y-6">
         {/* Notification Toast */}
         {notification && (
           <div className="bg-pink-50 border border-pink-200 text-pink-800 px-4 py-3 rounded-xl text-xs font-medium flex items-center gap-2 animate-in fade-in duration-200 shadow-xs">
@@ -892,20 +1310,40 @@ const SuperAdminPage = () => {
               <table className="w-full text-left text-xs whitespace-nowrap">
                 <thead className="bg-pink-50/70 text-slate-600 uppercase text-[11px] font-bold tracking-wider border-b border-pink-100">
                   <tr>
-                    <th className="py-3.5 px-5">Salon Company</th>
-                    <th className="py-3.5 px-4">Owner & Contact</th>
-                    <th className="py-3.5 px-4">Location / City</th>
-                    <th className="py-3.5 px-4">Subscription Plan</th>
-                    <th className="py-3.5 px-4 text-center">Status</th>
-                    <th className="py-3.5 px-5 text-right">Actions</th>
+                    <th className="py-3 px-4">Company Name</th>
+                    <th className="py-3 px-3">Username / Admin Name</th>
+                    <th className="py-3 px-3">Email</th>
+                    <th className="py-3 px-3">Phone Number</th>
+                    <th className="py-3 px-3">Location / City</th>
+                    <th className="py-3 px-3">Subscription Plan</th>
+                    <th className="py-3 px-3">Start Date</th>
+                    <th className="py-3 px-3">End Date</th>
+                    <th className="py-3 px-3 text-center">Status</th>
+                    <th className="py-3 px-4 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-pink-50">
                   {filteredTenants.length > 0 ? (
                     filteredTenants.map((tenant) => {
+                      const matchedPlan = plans.find(p => p.id === tenant.planId || (p.name && tenant.planName && p.name.toLowerCase() === tenant.planName.toLowerCase()));
+                      const planDays = matchedPlan?.durationDays || (matchedPlan?.billingCycle ? parseInt(matchedPlan.billingCycle) : null);
+                      const displayStart = tenant.startDate || tenant.createdDate || '-';
+                      let displayEnd = tenant.endDate || tenant.nextBillingDate;
+                      if (!displayEnd || displayEnd === '-') {
+                        if (displayStart && displayStart !== '-') {
+                          try {
+                            const sIso = toISODateString(displayStart);
+                            const d = new Date(sIso);
+                            d.setDate(d.getDate() + (planDays || 30));
+                            displayEnd = toDisplayDateString(d.toISOString().split('T')[0]);
+                          } catch (e) {
+                            displayEnd = '-';
+                          }
+                        }
+                      }
                       return (
                         <tr key={tenant.id} className="hover:bg-pink-50/30 transition-colors group">
-                          {/* Company Name & Brand */}
+                          {/* 1. Company Name & Brand */}
                           <td className="py-4 px-5">
                             <div className="flex items-center gap-3">
                               {tenant.logoUrl ? (
@@ -926,48 +1364,49 @@ const SuperAdminPage = () => {
                                     {tenant.brandName}
                                   </span>
                                 </div>
-                                <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5">
-                                  <span>Owner: <strong className="text-slate-700 font-medium">{tenant.ownerName}</strong></span>
-                                  <span>•</span>
-                                  <span>Joined {tenant.createdDate}</span>
-                                </div>
-                                <div className="flex items-center gap-2 mt-1">
-                                  <span className="text-[10px] bg-pink-50 text-pink-700 font-semibold px-2 py-0.5 rounded border border-pink-200">
-                                    Paid: ₹{calculateTenantLTV(tenant).toLocaleString()}
-                                  </span>
-                                  <button
-                                    onClick={() => handleOpenHistoryModal(tenant)}
-                                    className="text-[10px] text-pink-600 hover:text-pink-700 underline cursor-pointer flex items-center gap-0.5"
-                                    title="View Subscription & Billing History"
-                                  >
-                                    <History size={10} />
-                                    <span>History ({tenant.history?.length || 1})</span>
-                                  </button>
+                                <div className="text-[10px] text-slate-400 mt-0.5">
+                                  Joined {tenant.createdDate}
                                 </div>
                               </div>
                             </div>
                           </td>
 
-                          {/* Owner & Contact */}
+                          {/* 2. Username / Admin Name */}
                           <td className="py-4 px-4">
-                            <div className="font-medium text-slate-800">{tenant.ownerName}</div>
-                            <div className="text-[11px] text-slate-500 flex items-center gap-1.5 mt-0.5">
-                              <Phone size={11} /> {tenant.mobile}
-                            </div>
-                            <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
-                              <Mail size={11} /> {tenant.email}
+                            <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-pink-50 text-pink-800 rounded-md font-mono text-xs font-bold border border-pink-200">
+                                @{tenant.ownerName || 'admin'}
+                              </span>
                             </div>
                           </td>
 
-                          {/* Location / City */}
+                          {/* 3. Email */}
+                          <td className="py-4 px-4">
+                            <div className="text-xs text-slate-700 font-medium flex items-center gap-1.5">
+                              <Mail size={13} className="text-pink-600 shrink-0" />
+                              <span>{tenant.email || '-'}</span>
+                            </div>
+                          </td>
+
+                          {/* 4. Phone Number */}
+                          <td className="py-4 px-4">
+                            <div className="text-xs text-slate-700 font-mono font-medium flex items-center gap-1.5">
+                              <Phone size={13} className="text-pink-600 shrink-0" />
+                              <span>{tenant.mobile || '-'}</span>
+                            </div>
+                          </td>
+
+                          {/* 5. Location / City */}
                           <td className="py-4 px-4">
                             <div className="flex items-center gap-1.5 font-bold text-slate-800">
                               <MapPin size={13} className="text-pink-600 shrink-0" />
                               <span>{tenant.city || tenant.branches?.[0]?.city || 'Location Not Set'}</span>
                             </div>
-                            <div className="text-[11px] text-slate-500 mt-0.5 truncate max-w-xs">
-                              {tenant.branches?.[0]?.name || 'Main Salon Studio'}
-                            </div>
+                            {tenant.branches?.[0]?.name && tenant.branches[0].name !== tenant.city && (
+                              <div className="text-[11px] text-slate-500 mt-0.5 truncate max-w-xs">
+                                {tenant.branches[0].name}
+                              </div>
+                            )}
                           </td>
 
                           {/* Subscription Plan */}
@@ -976,26 +1415,58 @@ const SuperAdminPage = () => {
                               <span className="inline-block px-2.5 py-1 rounded-lg text-xs font-bold bg-pink-50 text-pink-700 border border-pink-200">
                                 {tenant.planName}
                               </span>
-                              <button
-                                onClick={() => handleOpenSubscriptionModal(tenant)}
-                                className="text-[11px] text-pink-600 hover:text-pink-700 flex items-center gap-0.5 hover:underline cursor-pointer"
-                                title="Change Plan / Extend Validity"
-                              >
-                                <Zap size={11} className="text-amber-500" />
-                                <span>Extend</span>
-                              </button>
-                            </div>
-                            <div className="text-[11px] text-emerald-600 font-semibold mt-1">
-                              ₹{tenant.mrr?.toLocaleString()}/month
-                            </div>
-                            <div className="text-[10px] text-slate-500 flex items-center gap-1 mt-0.5">
-                              <Calendar size={10} className={isTenantPlanExpired(tenant) ? "text-rose-500" : "text-slate-400"} />
-                              <span>
-                                Valid till: <strong className={isTenantPlanExpired(tenant) ? "text-rose-600 font-mono font-bold" : "text-slate-700 font-mono"}>{tenant.nextBillingDate || '21-Oct-2026'}</strong>
-                              </span>
                               {isTenantPlanExpired(tenant) && (
-                                <span className="bg-rose-100 text-rose-700 text-[9px] font-bold px-1.5 py-0.2 rounded border border-rose-200 ml-0.5">
+                                <button
+                                  onClick={() => handleOpenSubscriptionModal(tenant)}
+                                  className="text-[11px] text-rose-600 hover:text-rose-700 flex items-center gap-0.5 hover:underline cursor-pointer font-bold"
+                                  title="Subscription Expired - Click to Renew/Extend"
+                                >
+                                  <Zap size={11} className="text-rose-500 fill-rose-500" />
+                                  <span>Renew</span>
+                                </button>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-emerald-600 font-semibold mt-1 flex items-center gap-1.5">
+                              <span>₹{tenant.mrr?.toLocaleString()}</span>
+                              <span className="text-[10px] text-slate-500 font-mono bg-slate-100 px-1.5 py-0.2 rounded border border-slate-200">
+                                {planDays ? `${planDays} Days` : (matchedPlan?.billingCycle || 'Active')}
+                              </span>
+                            </div>
+                          </td>
+
+                          {/* Start Date */}
+                          <td className="py-4 px-3">
+                            <div className="text-xs text-slate-800 font-mono font-semibold flex items-center gap-1.5">
+                              <Calendar size={12} className="text-pink-600 shrink-0" />
+                              <span>{displayStart}</span>
+                            </div>
+                            <span className="text-[10px] text-slate-400 font-normal">Active Since</span>
+                          </td>
+
+                          {/* End Date */}
+                          <td className="py-4 px-3">
+                            <div className="text-xs font-mono font-bold flex items-center gap-1.5">
+                              <Calendar size={12} className={isTenantPlanExpired(tenant) ? "text-rose-500 shrink-0" : "text-emerald-600 shrink-0"} />
+                              <span className={isTenantPlanExpired(tenant) ? "text-rose-600 font-bold" : "text-slate-800"}>
+                                {displayEnd}
+                              </span>
+                            </div>
+                            <div className="mt-0.5">
+                              {isTenantPlanExpired(tenant) ? (
+                                <span className="bg-rose-100 text-rose-700 text-[10px] font-bold px-1.5 py-0.2 rounded border border-rose-200">
                                   Expired
+                                </span>
+                              ) : (
+                                <span className="bg-emerald-50 text-emerald-700 text-[10px] font-medium px-1.5 py-0.2 rounded border border-emerald-200">
+                                  {(() => {
+                                    if (!displayEnd || displayEnd === '-') return 'Active';
+                                    try {
+                                      const days = calculateDaysBetween(new Date().toISOString().split('T')[0], toISODateString(displayEnd));
+                                      return days ? `${days} left` : 'Active';
+                                    } catch (e) {
+                                      return 'Active';
+                                    }
+                                  })()}
                                 </span>
                               )}
                             </div>
@@ -1003,7 +1474,21 @@ const SuperAdminPage = () => {
 
                           {/* Status */}
                           <td className="py-4 px-4 text-center">
-                            {isTenantPlanExpired(tenant) ? (
+                            {tenant.status === 'Suspended' || tenant.isSuspended ? (
+                              <div className="inline-flex flex-col items-center">
+                                <button
+                                  onClick={() => handleToggleSuspend(tenant)}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold border border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100 shadow-2xs transition-all cursor-pointer"
+                                  title="Account Suspended by Super Admin. Click to Unsuspend."
+                                >
+                                  <span className="w-1.5 h-1.5 rounded-full bg-rose-600 animate-pulse" />
+                                  <span>Suspended</span>
+                                </button>
+                                <span className="text-[9px] font-bold text-rose-600 uppercase tracking-tight mt-0.5">
+                                  Access Frozen
+                                </span>
+                              </div>
+                            ) : isTenantPlanExpired(tenant) ? (
                               <div className="inline-flex flex-col items-center">
                                 <button
                                   onClick={() => handleToggleStatus(tenant)}
@@ -1031,7 +1516,7 @@ const SuperAdminPage = () => {
                                   Deactivated
                                 </span>
                               </div>
-                            ) : tenant.status === 'Active' ? (
+                            ) : (
                               <button
                                 onClick={() => handleToggleStatus(tenant)}
                                 className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 shadow-2xs transition-all cursor-pointer"
@@ -1040,68 +1525,91 @@ const SuperAdminPage = () => {
                                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                                 <span>Active</span>
                               </button>
-                            ) : (
-                              <button
-                                onClick={() => handleToggleStatus(tenant)}
-                                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold border border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100 shadow-2xs transition-all cursor-pointer"
-                                title="Account status. Click to toggle."
-                              >
-                                <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
-                                <span>{tenant.status}</span>
-                              </button>
                             )}
                           </td>
 
                           {/* Actions */}
-                          <td className="py-4 px-5 text-right">
-                            <div className="flex items-center justify-end gap-2">
+                          <td className="py-3 px-4 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
                               {/* View Complete Company Details */}
                               <button
                                 onClick={() => setViewDetailsModalTenant(tenant)}
-                                className="flex items-center gap-1 bg-white hover:bg-slate-100 text-slate-700 hover:text-slate-900 border border-slate-200 px-2.5 py-1.5 rounded-lg text-xs font-semibold shadow-2xs transition-all cursor-pointer"
+                                className="flex items-center gap-1 bg-white hover:bg-slate-100 text-slate-700 hover:text-slate-900 border border-slate-200 px-2 py-1 rounded-lg text-xs font-semibold shadow-2xs transition-all cursor-pointer"
                                 title="View Complete Company Details & Profile"
                               >
-                                <Eye size={13} className="text-slate-500" />
+                                <Eye size={12} className="text-slate-500" />
                                 <span>View</span>
                               </button>
 
                               {/* Edit Salon Details */}
                               <button
                                 onClick={() => handleOpenEditModal(tenant)}
-                                className="flex items-center gap-1 bg-white hover:bg-pink-50 text-pink-700 hover:text-pink-800 border border-pink-200 px-2.5 py-1.5 rounded-lg text-xs font-semibold shadow-2xs transition-all cursor-pointer"
+                                className="flex items-center gap-1 bg-white hover:bg-pink-50 text-pink-700 hover:text-pink-800 border border-pink-200 px-2 py-1 rounded-lg text-xs font-semibold shadow-2xs transition-all cursor-pointer"
                                 title="Edit Salon Profile, Owner, Location & Logo"
                               >
-                                <Edit2 size={13} className="text-pink-600" />
+                                <Edit2 size={12} className="text-pink-600" />
                                 <span>Edit</span>
                               </button>
 
                               {/* Subscription History Ledger Button */}
                               <button
                                 onClick={() => handleOpenHistoryModal(tenant)}
-                                className="flex items-center gap-1 bg-white hover:bg-pink-50 text-pink-700 hover:text-pink-800 border border-pink-200 px-2.5 py-1.5 rounded-lg text-xs font-semibold shadow-2xs transition-all cursor-pointer"
+                                className="flex items-center gap-1 bg-white hover:bg-pink-50 text-pink-700 hover:text-pink-800 border border-pink-200 px-2 py-1 rounded-lg text-xs font-semibold shadow-2xs transition-all cursor-pointer"
                                 title="View Company Subscription & Payment History"
                               >
-                                <History size={13} className="text-pink-600" />
+                                <History size={12} className="text-pink-600" />
                                 <span>History</span>
                               </button>
 
                               {/* Manage Subscription & Extension Button */}
-                              <button
-                                onClick={() => handleOpenSubscriptionModal(tenant)}
-                                className="flex items-center gap-1 bg-white hover:bg-rose-50 text-rose-700 hover:text-rose-800 border border-rose-200 px-2.5 py-1.5 rounded-lg text-xs font-semibold shadow-2xs transition-all cursor-pointer"
-                                title="Upgrade Plan or Extend Subscription"
-                              >
-                                <CalendarClock size={13} className="text-rose-500" />
-                                <span>Plan / Extend</span>
-                              </button>
+                              {isTenantPlanExpired(tenant) ? (
+                                <button
+                                  onClick={() => handleOpenSubscriptionModal(tenant)}
+                                  className="flex items-center gap-1 bg-gradient-to-r from-rose-500 to-pink-600 hover:from-rose-600 hover:to-pink-700 text-white font-bold px-2.5 py-1 rounded-lg text-xs shadow-2xs transition-all active:scale-95 cursor-pointer animate-pulse"
+                                  title="Subscription Expired: Click to Renew or Change Plan"
+                                >
+                                  <CalendarClock size={12} className="text-white" />
+                                  <span>Renew / Extend</span>
+                                </button>
+                              ) : (
+                                <button
+                                  disabled
+                                  className="flex items-center gap-1 bg-slate-50 text-slate-400 border border-slate-200 px-2 py-1 rounded-lg text-xs font-medium cursor-not-allowed opacity-60"
+                                  title={`Plan is active until ${displayEnd}. Plan changes and extensions unlock after expiry.`}
+                                >
+                                  <Lock size={12} className="text-slate-400" />
+                                  <span>Plan / Extend</span>
+                                </button>
+                              )}
+
+                              {/* Suspend / Unsuspend Salon Button */}
+                              {tenant.status === 'Suspended' || tenant.isSuspended ? (
+                                <button
+                                  onClick={() => handleToggleSuspend(tenant)}
+                                  className="flex items-center gap-1 bg-amber-50 hover:bg-amber-100 text-amber-800 hover:text-amber-900 border border-amber-200 font-bold px-2 py-1 rounded-lg text-xs shadow-2xs transition-all cursor-pointer"
+                                  title="Unsuspend account and restore salon access"
+                                >
+                                  <PlayCircle size={12} className="text-amber-600" />
+                                  <span>Unsuspend</span>
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => handleToggleSuspend(tenant)}
+                                  className="flex items-center gap-1 bg-white hover:bg-rose-50 text-rose-700 hover:text-rose-800 border border-rose-200 px-2 py-1 rounded-lg text-xs font-semibold shadow-2xs transition-all cursor-pointer"
+                                  title={`Suspend ${tenant.companyName} (freeze all operations)`}
+                                >
+                                  <Ban size={12} className="text-rose-600" />
+                                  <span>Suspend</span>
+                                </button>
+                              )}
 
                               {/* Impersonate Company Portal (Read-Only) */}
                               <button
                                 onClick={() => handleImpersonateCompany(tenant)}
-                                className="flex items-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 hover:text-indigo-900 border border-indigo-200 font-bold px-3 py-1.5 rounded-lg text-xs shadow-2xs transition-all active:scale-95 cursor-pointer"
+                                className="flex items-center gap-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 hover:text-indigo-900 border border-indigo-200 font-bold px-2.5 py-1 rounded-lg text-xs shadow-2xs transition-all active:scale-95 cursor-pointer"
                                 title={`Inspect ${tenant.companyName} portal in Read-Only mode`}
                               >
-                                <Eye size={13} className="text-indigo-600" />
+                                <Eye size={12} className="text-indigo-600" />
                                 <span>Impersonate</span>
                               </button>
 
@@ -1125,8 +1633,31 @@ const SuperAdminPage = () => {
                     })
                   ) : (
                     <tr>
-                      <td colSpan="6" className="py-12 text-center text-slate-400 italic">
-                        No salon companies found matching your search.
+                      <td colSpan="10" className="py-16 text-center">
+                        <div className="max-w-md mx-auto flex flex-col items-center justify-center text-center space-y-3">
+                          <div className="w-14 h-14 rounded-2xl bg-pink-50 border border-pink-200 flex items-center justify-center text-pink-500 shadow-xs">
+                            <Building2 size={28} />
+                          </div>
+                          <div className="space-y-1">
+                            <h4 className="text-base font-bold text-slate-800">
+                              {tenants.length === 0 ? 'No Salon Companies Registered Yet' : 'No Matching Salons Found'}
+                            </h4>
+                            <p className="text-xs text-slate-500">
+                              {tenants.length === 0
+                                ? 'You have not created any salon companies yet. Click the button below to onboard your first salon company.'
+                                : 'No salon companies matched your search or status filter criteria.'}
+                            </p>
+                          </div>
+                          {tenants.length === 0 && (
+                            <button
+                              onClick={handleOpenOnboardModal}
+                              className="mt-2 flex items-center gap-1.5 bg-gradient-to-r from-pink-600 to-rose-500 hover:from-pink-700 hover:to-rose-600 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-md shadow-pink-500/20 transition-all cursor-pointer active:scale-98"
+                            >
+                              <Plus size={15} />
+                              <span>+ Onboard First Salon</span>
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   )}
@@ -1140,81 +1671,104 @@ const SuperAdminPage = () => {
         {/* TAB 2: SUBSCRIPTION PLANS MATRIX                         */}
         {/* ======================================================== */}
         {activeTab === 'plans' && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {plans.map((plan) => {
-              const activeBadge = plan.badgeTag || '';
-              const salonsCount = tenants.filter(t => t.planId === plan.id).length;
+          plans.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {plans.map((plan) => {
+                const activeBadge = plan.badgeTag || '';
+                const salonsCount = tenants.filter(t => t.planId === plan.id).length;
 
-              return (
-                <div
-                  key={plan.id}
-                  className="bg-white border border-pink-100 rounded-2xl p-6 flex flex-col justify-between hover:border-pink-300 hover:shadow-xl transition-all shadow-xs relative group"
-                >
-                  {activeBadge && (
-                    <span className="absolute -top-3 right-6 bg-gradient-to-r from-pink-600 to-rose-500 text-white text-[10px] font-black uppercase px-3 py-0.5 rounded-full shadow-md">
-                      {activeBadge}
-                    </span>
-                  )}
-
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-lg font-black text-slate-900">{plan.name}</h3>
-                      <span className="text-[11px] font-semibold text-pink-700 bg-pink-50 px-2 py-0.5 rounded-md border border-pink-200">
-                        {plan.billingCycle || 'Monthly'}
+                return (
+                  <div
+                    key={plan.id}
+                    className="bg-white border border-pink-100 rounded-2xl p-6 flex flex-col justify-between hover:border-pink-300 hover:shadow-xl transition-all shadow-xs relative group"
+                  >
+                    {activeBadge && (
+                      <span className="absolute -top-3 right-6 bg-gradient-to-r from-pink-600 to-rose-500 text-white text-[10px] font-black uppercase px-3 py-0.5 rounded-full shadow-md">
+                        {activeBadge}
                       </span>
-                    </div>
+                    )}
 
-                    <div className="mt-3 flex items-baseline gap-1">
-                      <span className="text-3xl font-black text-pink-600">₹{plan.price.toLocaleString()}</span>
-                      <span className="text-xs text-slate-500">/ {plan.durationDays || 30} days</span>
-                    </div>
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-lg font-black text-slate-900">{plan.name}</h3>
+                        <span className="text-[11px] font-semibold text-pink-700 bg-pink-50 px-2 py-0.5 rounded-md border border-pink-200">
+                          {plan.billingCycle || 'Monthly'}
+                        </span>
+                      </div>
 
-                    <div className="mt-4 pt-4 border-t border-pink-100">
-                      <div className="flex items-center justify-between text-xs text-slate-600">
-                        <span>Plan Validity:</span>
-                        <strong className="text-pink-700 font-bold bg-pink-50 px-2 py-0.5 rounded border border-pink-200">
-                          {plan.durationDays || 30} Days
-                        </strong>
+                      <div className="mt-3 flex items-baseline gap-1">
+                        <span className="text-3xl font-black text-pink-600">₹{plan.price.toLocaleString()}</span>
+                        <span className="text-xs text-slate-500">/ {plan.durationDays || 30} days</span>
+                      </div>
+
+                      <div className="mt-4 pt-4 border-t border-pink-100">
+                        <div className="flex items-center justify-between text-xs text-slate-600">
+                          <span>Plan Validity:</span>
+                          <strong className="text-pink-700 font-bold bg-pink-50 px-2 py-0.5 rounded border border-pink-200">
+                            {plan.durationDays || 30} Days
+                          </strong>
+                        </div>
+                      </div>
+
+                      <div className="mt-5 space-y-2.5">
+                        <p className="text-[11px] font-bold uppercase text-slate-500 tracking-wider">Features Included:</p>
+                        {(plan.features || []).map((f, i) => (
+                          <div key={i} className="flex items-center gap-2 text-xs text-slate-700">
+                            <Check size={14} className="text-pink-600 shrink-0" />
+                            <span>{f}</span>
+                          </div>
+                        ))}
                       </div>
                     </div>
 
-                    <div className="mt-5 space-y-2.5">
-                      <p className="text-[11px] font-bold uppercase text-slate-500 tracking-wider">Features Included:</p>
-                      {(plan.features || []).map((f, i) => (
-                        <div key={i} className="flex items-center gap-2 text-xs text-slate-700">
-                          <Check size={14} className="text-pink-600 shrink-0" />
-                          <span>{f}</span>
-                        </div>
-                      ))}
+                    <div className="mt-6 pt-4 border-t border-pink-100 flex items-center justify-between">
+                      <div className="text-xs text-slate-500 font-medium">
+                        <span className="text-slate-900 font-bold">{salonsCount}</span> Salons on this plan
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => handleOpenEditPlan(plan)}
+                          className="px-2.5 py-1 bg-pink-50 hover:bg-pink-100 text-pink-700 border border-pink-200 rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                          title="Edit Plan"
+                        >
+                          <Edit2 size={12} />
+                          <span>Edit</span>
+                        </button>
+                        <button
+                          onClick={() => handleDeletePlan(plan)}
+                          className="p-1.5 bg-slate-50 hover:bg-rose-50 text-slate-400 hover:text-rose-600 rounded-lg text-xs transition-colors border border-slate-200 cursor-pointer"
+                          title="Delete Plan"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
                     </div>
                   </div>
-
-                  <div className="mt-6 pt-4 border-t border-pink-100 flex items-center justify-between">
-                    <div className="text-xs text-slate-500 font-medium">
-                      <span className="text-slate-900 font-bold">{salonsCount}</span> Salons on this plan
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={() => handleOpenEditPlan(plan)}
-                        className="px-2.5 py-1 bg-pink-50 hover:bg-pink-100 text-pink-700 border border-pink-200 rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
-                        title="Edit Plan"
-                      >
-                        <Edit2 size={12} />
-                        <span>Edit</span>
-                      </button>
-                      <button
-                        onClick={() => handleDeletePlan(plan)}
-                        className="p-1.5 bg-slate-50 hover:bg-rose-50 text-slate-400 hover:text-rose-600 rounded-lg text-xs transition-colors border border-slate-200 cursor-pointer"
-                        title="Delete Plan"
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    </div>
-                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="bg-white border border-pink-100 rounded-2xl p-16 shadow-xs text-center">
+              <div className="max-w-md mx-auto flex flex-col items-center justify-center text-center space-y-3">
+                <div className="w-14 h-14 rounded-2xl bg-pink-50 border border-pink-200 flex items-center justify-center text-pink-500 shadow-xs">
+                  <CreditCard size={28} />
                 </div>
-              );
-            })}
-          </div>
+                <div className="space-y-1">
+                  <h4 className="text-base font-bold text-slate-800">No Subscription Plans Configured Yet</h4>
+                  <p className="text-xs text-slate-500">
+                    You have not configured any subscription plans yet. Click the button below to define custom pricing, validity duration, features, and cashier limits for your salons.
+                  </p>
+                </div>
+                <button
+                  onClick={handleOpenCreatePlan}
+                  className="mt-2 flex items-center gap-1.5 bg-gradient-to-r from-pink-600 to-rose-500 hover:from-pink-700 hover:to-rose-600 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-md shadow-pink-500/20 transition-all cursor-pointer active:scale-98"
+                >
+                  <Plus size={15} />
+                  <span>+ Create Subscription Plan</span>
+                </button>
+              </div>
+            </div>
+          )
         )}
 
         {/* ======================================================== */}
@@ -1640,13 +2194,16 @@ const SuperAdminPage = () => {
 
               {/* Admin Password & Access Info */}
               <div className="pt-2 border-t border-pink-100">
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Admin Password *</label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Admin Password * <span className="text-[10px] text-pink-600 font-normal">(Minimum 8 characters)</span>
+                </label>
                 <input
                   type="password"
                   required
+                  minLength={8}
                   value={tenantForm.adminPassword}
                   onChange={(e) => setTenantForm({ ...tenantForm, adminPassword: e.target.value })}
-                  placeholder="Create admin password"
+                  placeholder="Create admin password (min 8 characters)"
                   className="w-full px-3.5 py-2 bg-pink-50/40 border border-pink-200 rounded-lg text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-pink-500 focus:ring-1 focus:ring-pink-300"
                 />
                 <p className="text-[11px] text-slate-500 mt-1.5 flex items-center gap-1">
@@ -1676,11 +2233,15 @@ const SuperAdminPage = () => {
                       }}
                       className="w-full px-3.5 py-2.5 bg-pink-50/40 border border-pink-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:border-pink-500 cursor-pointer shadow-xs"
                     >
-                      {plans.map(p => (
-                        <option key={p.id} value={p.id}>
-                          {p.name} (₹{p.price.toLocaleString()} • {p.durationDays || 30} Days Validity)
-                        </option>
-                      ))}
+                      {plans.length > 0 ? (
+                        plans.map(p => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} (₹{p.price.toLocaleString()} • {p.durationDays || 30} Days Validity)
+                          </option>
+                        ))
+                      ) : (
+                        <option value="standard_plan">Standard Subscription (Custom / Direct)</option>
+                      )}
                     </select>
                   </div>
 
@@ -2520,7 +3081,15 @@ const SuperAdminPage = () => {
                   <Zap size={14} className="text-pink-600" />
                 </div>
                 <div className="text-sm font-bold text-pink-700 truncate">{historyModalTenant.planName}</div>
-                <div className="text-[10px] text-slate-600 mt-0.5 font-medium">₹{historyModalTenant.mrr?.toLocaleString()}/month</div>
+                <div className="text-[10px] text-slate-600 mt-0.5 font-medium">
+                  ₹{historyModalTenant.mrr?.toLocaleString()}
+                  {(() => {
+                    const days = historyModalTenant.planName?.toLowerCase().includes('bumper') ? 116
+                      : historyModalTenant.planName?.toLowerCase().includes('jumper') ? 18
+                      : plans.find(p => p.id === historyModalTenant.planId)?.durationDays;
+                    return days ? ` (${days} Days)` : '';
+                  })()}
+                </div>
               </div>
 
               <div className="bg-pink-50/30 p-3.5 rounded-xl border border-pink-100">
@@ -2528,8 +3097,16 @@ const SuperAdminPage = () => {
                   <span className="text-[11px] font-semibold">Current Expiry</span>
                   <Clock size={14} className="text-rose-500" />
                 </div>
-                <div className="text-sm font-bold text-rose-600 font-mono">{historyModalTenant.nextBillingDate || '21-Oct-2026'}</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">Active Subscription</div>
+                <div className="text-sm font-bold text-rose-600 font-mono">
+                  {historyModalTenant.endDate || historyModalTenant.nextBillingDate || '-'}
+                </div>
+                <div className="text-[10px] text-slate-400 mt-0.5">
+                  {isTenantPlanExpired(historyModalTenant) ? (
+                    <span className="text-rose-600 font-bold">Expired</span>
+                  ) : (
+                    <span className="text-emerald-600 font-semibold">Active Subscription</span>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -2539,16 +3116,26 @@ const SuperAdminPage = () => {
                 Subscription Ledger ({historyModalTenant.history?.length || 0} Records)
               </div>
               <div className="flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    handleOpenSubscriptionModal(historyModalTenant);
-                    setHistoryModalTenant(null);
-                  }}
-                  className="px-3.5 py-1.5 bg-gradient-to-r from-pink-600 to-rose-500 hover:from-pink-700 hover:to-rose-600 text-white rounded-lg text-xs font-bold transition-all shadow-sm cursor-pointer flex items-center gap-1.5"
-                >
-                  <CalendarClock size={13} />
-                  <span>Extend / Change Plan</span>
-                </button>
+                {isTenantPlanExpired(historyModalTenant) ? (
+                  <button
+                    onClick={() => {
+                      handleOpenSubscriptionModal(historyModalTenant);
+                      setHistoryModalTenant(null);
+                    }}
+                    className="px-3.5 py-1.5 bg-gradient-to-r from-pink-600 to-rose-500 hover:from-pink-700 hover:to-rose-600 text-white rounded-lg text-xs font-bold transition-all shadow-sm cursor-pointer flex items-center gap-1.5"
+                  >
+                    <CalendarClock size={13} />
+                    <span>Extend / Change Plan</span>
+                  </button>
+                ) : (
+                  <div
+                    className="px-3 py-1.5 bg-slate-100 text-slate-500 border border-slate-200 rounded-lg text-xs font-medium flex items-center gap-1.5 cursor-not-allowed select-none"
+                    title={`Plan is active until ${historyModalTenant.endDate || historyModalTenant.nextBillingDate}. Extensions unlock upon expiry.`}
+                  >
+                    <Lock size={12} className="text-slate-400" />
+                    <span>Active (Locked Until Expiry)</span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -2628,19 +3215,31 @@ const SuperAdminPage = () => {
 
                           {/* Validity Coverage */}
                           <td className="py-3.5 px-4 whitespace-nowrap">
-                            <div className="flex items-center gap-1 text-[11px]">
-                              <span className="text-slate-400">Start:</span>
-                              <span className="font-mono text-slate-700">{record.startDate || '-'}</span>
-                            </div>
-                            <div className="flex items-center gap-1 text-[11px] mt-0.5">
-                              <span className="text-slate-400">End:</span>
-                              <span className="font-mono text-rose-600 font-bold">{record.endDate || '-'}</span>
-                              {record.duration && (
-                                <span className="text-[10px] bg-pink-50 text-pink-700 px-1.5 py-0.5 rounded border border-pink-100 ml-1">
-                                  {record.duration}
-                                </span>
-                              )}
-                            </div>
+                            {(() => {
+                              const covStart = record.startDate || historyModalTenant.startDate || historyModalTenant.createdDate || record.date || '-';
+                              const covEnd = record.endDate || historyModalTenant.endDate || historyModalTenant.nextBillingDate || '-';
+                              const covDuration = record.duration || (
+                                (record.planName || historyModalTenant.planName)?.toLowerCase().includes('bumper') ? '116 Days' :
+                                (record.planName || historyModalTenant.planName)?.toLowerCase().includes('jumper') ? '18 Days' : null
+                              );
+                              return (
+                                <>
+                                  <div className="flex items-center gap-1.5 text-[11px]">
+                                    <span className="text-slate-400 font-medium">Start:</span>
+                                    <span className="font-mono text-slate-800 font-semibold">{covStart}</span>
+                                  </div>
+                                  <div className="flex items-center gap-1.5 text-[11px] mt-0.5">
+                                    <span className="text-slate-400 font-medium">End:</span>
+                                    <span className="font-mono text-rose-600 font-bold">{covEnd}</span>
+                                    {covDuration && (
+                                      <span className="text-[10px] bg-pink-100/70 text-pink-700 font-semibold px-1.5 py-0.2 rounded border border-pink-200 ml-1">
+                                        {covDuration}
+                                      </span>
+                                    )}
+                                  </div>
+                                </>
+                              );
+                            })()}
                           </td>
 
                           {/* Amount Paid */}

@@ -5,16 +5,17 @@ import {
   ChevronDown, Phone, Search, List, LayoutGrid, Trash2, CheckCircle2, XCircle,
   AlertCircle, CreditCard, CalendarClock, Play, RotateCcw, Pencil, UserCheck,
   FileText, Printer, Download, MessageCircle, Users, Banknote, Smartphone,
-  Landmark, Wallet
+  Landmark, Wallet, Loader2
 } from 'lucide-react';
 import { timeSlots } from '../data/mockData.js';
-import { getMasterStaff, initialStaffMembers } from '../utils/staffStorage.js';
+import { getMasterStaff, initialStaffMembers, syncStaffFromBackend } from '../utils/staffStorage.js';
 import { getCustomers } from '../utils/customerStorage.js';
 import { getMasterServices } from '../utils/serviceStorage.js';
 import { getMasterProducts } from '../utils/productStorage.js';
 import { getOrders, updateOrder, updateOrderStatus } from '../utils/orderStorage.js';
-import { getAppointments, saveAppointment, updateAppointment, deleteAppointment } from '../utils/appointmentStorage.js';
+import { getAppointments, saveAppointment, updateAppointment, deleteAppointment, fetchAppointmentsFromBackend, isAppointmentsLoading } from '../utils/appointmentStorage.js';
 import { getActiveTenant, isReadOnlySession, notifyReadOnlyBlocked } from '../utils/saasStorage.js';
+import { appointmentApi, posApi } from '../api/client.js';
 
 // ==========================================
 // APPOINTMENT INVOICE BILL MODAL
@@ -90,26 +91,46 @@ const AppointmentInvoiceModal = ({ isOpen, onClose, appointment }) => {
     disposableItems = rawItems.filter(isDisposableItem);
   }
 
-  const originalPrice = Number(appointment.originalPrice || appointment.price) || 200;
-  const finalPrice = Number(appointment.price) || originalPrice;
+  const isRedemption = appointment.paymentMethod === 'PACKAGE_REDEMPTION' ||
+                       appointment.paymentMethod === 'REDEMPTION' ||
+                       appointment.isPackageRedemption ||
+                       (appointment.service && String(appointment.service).toLowerCase().includes('redemption')) ||
+                       (rawItems.some(i => i.isPackageRedemption || (i.name && String(i.name).toLowerCase().includes('redemption'))));
+
+  const originalPrice = appointment.originalPrice !== undefined && appointment.originalPrice !== null && appointment.originalPrice !== ''
+    ? Number(appointment.originalPrice)
+    : (appointment.price !== undefined && appointment.price !== null && appointment.price !== ''
+        ? Number(appointment.price)
+        : (isRedemption ? 0 : 200));
+
+  const finalPrice = appointment.price !== undefined && appointment.price !== null && appointment.price !== ''
+    ? Number(appointment.price)
+    : (isRedemption ? 0 : originalPrice);
+
   const discountAmount = parseFloat(appointment.discAmount) || Math.max(0, originalPrice - finalPrice);
 
   const finalServices = serviceItems.length > 0
     ? serviceItems
     : (rawItems.length === 0 ? [{
         name: appointment.service || 'Salon Service',
-        staff: appointment.staff || 'Respark Trial',
-        price: originalPrice,
-        discAmount: discountAmount,
+        staff: appointment.staff || 'Staff',
+        price: isRedemption ? 0 : originalPrice,
+        discAmount: isRedemption ? 0 : discountAmount,
         qty: 1,
-        total: finalPrice
+        total: isRedemption ? 0 : finalPrice
       }] : []);
 
   const servicesSubTotal = finalServices.reduce((sum, it) => sum + ((it.price * (it.qty || 1)) - (parseFloat(it.discAmount) || 0)), 0);
   const productsSubTotal = productItems.reduce((sum, it) => sum + ((it.price * (it.qty || 1)) - (parseFloat(it.discAmount) || 0)), 0);
   const disposablesSubTotal = disposableItems.reduce((sum, it) => sum + ((it.price * (it.qty || 1)) - (parseFloat(it.discAmount) || 0)), 0);
   const calculatedGrandTotal = servicesSubTotal + productsSubTotal + disposablesSubTotal;
-  const grandTotal = calculatedGrandTotal > 0 ? calculatedGrandTotal : (Number(appointment.grandTotal) || finalPrice);
+  const grandTotal = isRedemption
+    ? 0
+    : ((rawItems.length > 0 || finalServices.length > 0)
+        ? calculatedGrandTotal
+        : (appointment.grandTotal !== undefined && appointment.grandTotal !== null && appointment.grandTotal !== ''
+            ? Number(appointment.grandTotal)
+            : finalPrice));
   const invoiceId = appointment.invoiceId || appointment.orderId || linkedOrder?.invoiceId || `INV-${appointment.id || '101'}`;
   const isPaid = appointment.paymentStatus === 'Paid' || linkedOrder?.paymentStatus === 'Paid';
   const paymentMethod = appointment.paymentMethod || linkedOrder?.paymentMethod || 'Cash';
@@ -159,6 +180,37 @@ const AppointmentInvoiceModal = ({ isOpen, onClose, appointment }) => {
   };
 
   const handleWhatsApp = () => {
+    let cleanPhone = (appointment.mobile || '').replace(/\D/g, '');
+    if (cleanPhone.length === 10) {
+      cleanPhone = `91${cleanPhone}`;
+    }
+
+    const servicesText = finalServices.map((it, idx) => `${idx + 1}. *${it.name}* - ₹${it.price}`).join('\n');
+
+    const message = `🧾 *APPOINTMENT BOOKING / RECEIPT*
+*${companyName.toUpperCase()}*
+📍 ${companyLocation}${displayAddress ? `, ${displayAddress}` : ''}
+${companyPhone ? `📞 ${companyPhone}\n` : ''}${companyGstin ? `GSTIN: ${companyGstin}\n` : ''}
+━━━━━━━━━━━━━━━━━━━━
+👤 *Customer:* ${appointment.guest || 'Customer'}
+📱 *Phone:* ${appointment.mobile || '-'}
+📄 *Invoice ID:* #${invoiceId}
+📅 *Date:* ${appointment.date || 'Today'} (${appointment.timeSlot || ''})
+💳 *Status:* ${isPaid ? `Paid via ${paymentMethod}` : 'Due on Visit (Unpaid)'}
+━━━━━━━━━━━━━━━━━━━━
+*SERVICES:*
+${servicesText || '1. Salon Service\n'}━━━━━━━━━━━━━━━━━━━━
+💰 *Grand Total: ₹${grandTotal}*
+
+Thank you for choosing *${companyName}*! ✨`;
+
+    const encodedMsg = encodeURIComponent(message);
+    const whatsappUrl = cleanPhone
+      ? `https://wa.me/${cleanPhone}?text=${encodedMsg}`
+      : `https://wa.me/?text=${encodedMsg}`;
+
+    window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
+
     setWhatsAppSent(true);
     setTimeout(() => setWhatsAppSent(false), 4000);
   };
@@ -276,12 +328,9 @@ Grand Total: ₹ ${grandTotal}
                     )}
                   </span>
                 )}
-                <span className="text-xs font-semibold px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 uppercase">
-                  {tenant?.planName || 'RESPARK'}
-                </span>
               </div>
               <p className="text-[11px] font-medium text-slate-500 tracking-wide mt-0.5">
-                {tenant?.tagline || 'Manage Smarter, Grow Faster'}
+                {tenant?.tagline || 'Excellence in Beauty & Care'}
               </p>
             </div>
 
@@ -533,12 +582,6 @@ Grand Total: ₹ ${grandTotal}
             >
               <Printer size={14} className="mr-1.5" /> Print
             </button>
-            <button
-              onClick={handleDownload}
-              className="flex items-center px-3 py-1.5 border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
-            >
-              <Download size={14} className="mr-1.5" /> Download
-            </button>
           </div>
           <button
             onClick={onClose}
@@ -623,23 +666,45 @@ export default function AppointmentPage() {
   const [masterServices, setMasterServices] = useState(() => getMasterServices());
   const [existingCustomers, setExistingCustomers] = useState(() => getCustomers());
   const [appointments, setAppointments] = useState(() => getAppointments());
+  const [isLoading, setIsLoading] = useState(() => isAppointmentsLoading());
   const [masterProducts, setMasterProducts] = useState(() => getMasterProducts());
   const [guestDropdownOpen, setGuestDropdownOpen] = useState(false);
   const guestDropdownRef = useRef(null);
 
   useEffect(() => {
+    let isMounted = true;
+    syncStaffFromBackend();
+
+    if (isAppointmentsLoading()) {
+      setIsLoading(true);
+    }
+
+    fetchAppointmentsFromBackend()
+      .then((data) => {
+        if (isMounted && data) {
+          setAppointments(data);
+        }
+      })
+      .finally(() => {
+        if (isMounted) {
+          setIsLoading(false);
+        }
+      });
+
     const handleUpdate = () => {
       setMasterStaff(getMasterStaff());
       setMasterServices(getMasterServices());
       setMasterProducts(getMasterProducts());
       setExistingCustomers(getCustomers());
       setAppointments(getAppointments());
+      setIsLoading(false);
     };
     window.addEventListener('staffUpdated', handleUpdate);
     window.addEventListener('servicesUpdated', handleUpdate);
     window.addEventListener('productsUpdated', handleUpdate);
     window.addEventListener('customersUpdated', handleUpdate);
     window.addEventListener('appointmentsUpdated', handleUpdate);
+    window.addEventListener('ordersUpdated', handleUpdate);
     window.addEventListener('tenantChanged', handleUpdate);
     window.addEventListener('focus', handleUpdate);
     return () => {
@@ -648,6 +713,7 @@ export default function AppointmentPage() {
       window.removeEventListener('productsUpdated', handleUpdate);
       window.removeEventListener('customersUpdated', handleUpdate);
       window.removeEventListener('appointmentsUpdated', handleUpdate);
+      window.removeEventListener('ordersUpdated', handleUpdate);
       window.removeEventListener('tenantChanged', handleUpdate);
       window.removeEventListener('focus', handleUpdate);
     };
@@ -681,9 +747,9 @@ export default function AppointmentPage() {
   const [rescheduleModalOpen, setRescheduleModalOpen] = useState(false);
   const [rescheduleTarget, setRescheduleTarget] = useState(null);
   const [rescheduleForm, setRescheduleForm] = useState({
-    date: '18-Sep-2026',
+    date: formatDateDDMMMYYYY(new Date()),
     timeSlot: '11:00 AM',
-    staff: 'Respark Trial'
+    staff: (typeof masterStaff[0] === 'string' ? masterStaff[0] : masterStaff[0]?.name) || 'Staff'
   });
   const [rescheduleCalMonth, setRescheduleCalMonth] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
 
@@ -705,6 +771,64 @@ export default function AppointmentPage() {
   const handleViewInvoice = (appt) => {
     setSelectedInvoiceAppt(appt);
     setInvoiceModalOpen(true);
+  };
+
+  const getApptDurationDisplay = (appt) => {
+    if (!appt) return null;
+
+    // Package redemptions do not need duration displayed (only slot time)
+    const sName = String(appt.service || '').toLowerCase();
+    if (
+      sName.startsWith('redemption:') ||
+      sName.includes('package redemption') ||
+      sName.includes('package session:') ||
+      appt.isPackageRedemption ||
+      (Array.isArray(appt.packageRedemptions) && appt.packageRedemptions.length > 0)
+    ) {
+      return null;
+    }
+
+    // 1. Check if appt has items array with service names/durations
+    if (Array.isArray(appt.items) && appt.items.length > 0) {
+      let totalMins = 0;
+      for (const it of appt.items) {
+        if (it.itemType && String(it.itemType).toLowerCase() !== 'service') continue;
+        const itName = (it.name || it.itemName || '').trim().toLowerCase();
+        const found = (masterServices || []).find(ms => (ms.name || '').trim().toLowerCase() === itName || String(ms.id) === String(it.serviceId || it.id));
+        if (found) {
+          const mins = parseInt(found.durationMinutes || found.duration) || 0;
+          if (mins > 0) totalMins += mins;
+        } else if (it.durationMinutes) {
+          totalMins += Number(it.durationMinutes);
+        } else if (it.duration) {
+          const parsed = parseInt(it.duration);
+          if (parsed > 0) totalMins += parsed;
+        }
+      }
+      if (totalMins > 0) return `${totalMins} min`;
+    }
+
+    // 2. Check if appt.service contains one or more service names
+    if (appt.service) {
+      const parts = String(appt.service).split(',').map(s => s.trim().toLowerCase());
+      let totalMins = 0;
+      for (const part of parts) {
+        const cleanName = part.replace(/^(redemption:\s*|package session:\s*)/i, '').trim();
+        const found = (masterServices || []).find(ms => (ms.name || '').trim().toLowerCase() === cleanName || (ms.name || '').trim().toLowerCase() === part);
+        if (found) {
+          const mins = parseInt(found.durationMinutes || found.duration) || 0;
+          if (mins > 0) totalMins += mins;
+        }
+      }
+      if (totalMins > 0) return `${totalMins} min`;
+    }
+
+    // 3. If appt.duration is specifically set and not legacy '45 min'
+    if (appt.duration && appt.duration !== '45 min' && appt.duration !== '45m') {
+      return String(appt.duration).includes('min') ? appt.duration : `${appt.duration} min`;
+    }
+
+    return appt.duration || '30 min';
   };
 
   const getApptInvoiceNo = (appt) => {
@@ -758,7 +882,7 @@ export default function AppointmentPage() {
     discPercent: '',
     discAmount: '',
     price: 200,
-    staff: 'Respark Trial',
+    staff: (typeof masterStaff[0] === 'string' ? masterStaff[0] : masterStaff[0]?.name) || 'Staff',
     date: formatDateYYYYMMDD(new Date()),
     timeSlot: getDefaultUpcomingSlot(formatDateYYYYMMDD(new Date()), timeSlots),
     paymentMethod: 'Pay at Salon',
@@ -864,7 +988,7 @@ export default function AppointmentPage() {
   // Filter appointments by selected date
   const dateFilteredAppointments = appointments.filter(a => {
     if (!filterByDate) return true;
-    const apptDate = a.date || '18-Sep-2026';
+    const apptDate = a.date || formatDateDDMMMYYYY(new Date());
     return apptDate === selectedDate;
   });
 
@@ -925,7 +1049,7 @@ export default function AppointmentPage() {
       price: origPrice,
       discAmount: discAmt,
       qty: 1,
-      staff: appointmentForm.staff || 'Respark Trial',
+      staff: appointmentForm.staff || (typeof masterStaff[0] === 'string' ? masterStaff[0] : masterStaff[0]?.name) || 'Staff',
       itemType: 'service'
     };
 
@@ -950,7 +1074,7 @@ export default function AppointmentPage() {
       productsPrice: productsTotal,
       paymentMethod: appointmentForm.paymentMethod || 'Pay at Salon',
       paymentStatus: appointmentForm.paymentStatus || 'Unpaid',
-      staff: appointmentForm.staff || 'Respark Trial',
+      staff: appointmentForm.staff || (typeof masterStaff[0] === 'string' ? masterStaff[0] : masterStaff[0]?.name) || 'Staff',
       timeSlot: appointmentForm.timeSlot || '11:00 AM',
       instruction: appointmentForm.instruction || '',
       duration: appointmentForm.duration || '45 min',
@@ -970,7 +1094,7 @@ export default function AppointmentPage() {
       discPercent: '',
       discAmount: '',
       price: 200,
-      staff: 'Respark Trial',
+      staff: (typeof masterStaff[0] === 'string' ? masterStaff[0] : masterStaff[0]?.name) || 'Staff',
       date: formatDateYYYYMMDD(new Date()),
       timeSlot: getDefaultUpcomingSlot(formatDateYYYYMMDD(new Date()), timeSlots),
       paymentMethod: 'Pay at Salon',
@@ -980,27 +1104,32 @@ export default function AppointmentPage() {
     });
   };
 
-  const handleUpdateStatus = (id, newStatus) => {
+  const handleUpdateStatus = async (id, newStatus) => {
     if (isReadOnlySession()) {
       notifyReadOnlyBlocked('Updating appointment status');
       return;
     }
-    updateAppointment(id, { status: newStatus });
+    await updateAppointment(id, { status: newStatus });
     setAppointments(getAppointments());
     const targetAppt = appointments.find(a => a.id === id);
     const orderIdToUpdate = targetAppt?.orderId || targetAppt?.invoiceId;
     if (orderIdToUpdate) {
-      updateOrderStatus(orderIdToUpdate, newStatus);
+      await updateOrderStatus(orderIdToUpdate, newStatus);
     }
+    fetchAppointmentsFromBackend().then(appts => {
+      if (appts) setAppointments(appts);
+    });
   };
 
-  const handleDeleteAppointment = (id) => {
+  const handleDeleteAppointment = async (apptOrId) => {
     if (isReadOnlySession()) {
       notifyReadOnlyBlocked('Deleting an appointment');
       return;
     }
-    if (window.confirm('Are you sure you want to remove this appointment?')) {
-      deleteAppointment(id);
+    if (window.confirm('Are you sure you want to permanently delete this appointment from the database?')) {
+      await deleteAppointment(apptOrId);
+      const appts = await fetchAppointmentsFromBackend();
+      if (appts) setAppointments(appts);
     }
   };
 
@@ -1010,7 +1139,7 @@ export default function AppointmentPage() {
     setRescheduleForm({
       date: targetDate,
       timeSlot: appt.timeSlot || '11:00 AM',
-      staff: appt.staff || (typeof masterStaff[0] === 'string' ? masterStaff[0] : masterStaff[0]?.name || 'Respark Trial')
+      staff: appt.staff || (typeof masterStaff[0] === 'string' ? masterStaff[0] : masterStaff[0]?.name || 'Staff')
     });
     const parsed = parseDateStr(targetDate);
     setRescheduleCalMonth(new Date(parsed.getFullYear(), parsed.getMonth(), 1));
@@ -1068,38 +1197,68 @@ export default function AppointmentPage() {
     setFilterByDate(true);
   };
 
-  const handleSaveReschedule = () => {
+  const handleSaveReschedule = async () => {
     if (isReadOnlySession()) {
       notifyReadOnlyBlocked('Rescheduling an appointment');
       return;
     }
     if (!rescheduleTarget) return;
-    updateAppointment(rescheduleTarget.id, {
-      date: rescheduleForm.date,
-      timeSlot: rescheduleForm.timeSlot,
-      staff: rescheduleForm.staff
-    });
+
+    const allStaff = getMasterStaff();
+    const matchedStaff = allStaff.find(s => 
+      (typeof s === 'string' ? s : s.name)?.trim().toLowerCase() === (rescheduleForm.staff || '').trim().toLowerCase()
+    );
+    const resolvedStaffId = matchedStaff?.id || rescheduleTarget.staffId;
+
+    const targetId = rescheduleTarget.id;
     setRescheduleModalOpen(false);
     setRescheduleTarget(null);
+
+    await updateAppointment(targetId, {
+      date: rescheduleForm.date,
+      timeSlot: rescheduleForm.timeSlot,
+      staff: rescheduleForm.staff,
+      staffId: resolvedStaffId || undefined,
+    });
+    setAppointments(getAppointments());
+    fetchAppointmentsFromBackend().then(appts => {
+      if (appts) setAppointments(appts);
+    });
   };
 
   const handleOpenChangeStaff = (appt) => {
     setChangeStaffTarget(appt);
-    setSelectedStaffToAssign(appt.staff || (typeof masterStaff[0] === 'string' ? masterStaff[0] : masterStaff[0]?.name || 'Respark Trial'));
+    const defaultStaff = (typeof masterStaff[0] === 'string' ? masterStaff[0] : masterStaff[0]?.name) || 'Staff';
+    const currentStaff = (appt.staff && appt.staff !== 'Unassigned' && appt.staff !== '—') ? appt.staff : defaultStaff;
+    setSelectedStaffToAssign(currentStaff);
     setChangeStaffModalOpen(true);
   };
 
-  const handleSaveChangeStaff = () => {
+  const handleSaveChangeStaff = async () => {
     if (isReadOnlySession()) {
       notifyReadOnlyBlocked('Reassigning appointment staff');
       return;
     }
     if (!changeStaffTarget || !selectedStaffToAssign) return;
-    updateAppointment(changeStaffTarget.id, {
-      staff: selectedStaffToAssign
-    });
+
+    const allStaff = getMasterStaff();
+    const matchedStaff = allStaff.find(s => 
+      (typeof s === 'string' ? s : s.name)?.trim().toLowerCase() === selectedStaffToAssign.trim().toLowerCase()
+    );
+    const resolvedStaffId = matchedStaff?.id || changeStaffTarget.staffId;
+
+    const targetId = changeStaffTarget.id;
     setChangeStaffModalOpen(false);
     setChangeStaffTarget(null);
+
+    await updateAppointment(targetId, {
+      staff: selectedStaffToAssign,
+      staffId: resolvedStaffId || undefined,
+    });
+    setAppointments(getAppointments());
+    fetchAppointmentsFromBackend().then(appts => {
+      if (appts) setAppointments(appts);
+    });
   };
 
   const handleOpenCollectPayment = (appt, completeAfter = false) => {
@@ -1109,50 +1268,87 @@ export default function AppointmentPage() {
     setCollectPaymentModalOpen(true);
   };
 
-  const handleConfirmPayment = () => {
+  const handleConfirmPayment = async () => {
     if (isReadOnlySession()) {
       notifyReadOnlyBlocked('Collecting appointment payment');
       return;
     }
     if (!collectPaymentTarget) return;
-    const finalStatus = markCompletedAfterPayment ? 'Completed' : collectPaymentTarget.status;
-    updateAppointment(collectPaymentTarget.id, {
+
+    const target = { ...collectPaymentTarget };
+    const finalStatus = markCompletedAfterPayment ? 'Completed' : target.status;
+    const finalMethod = selectedPaymentMethod;
+    const amountToCollect = Number(target.price || target.grandTotal || 200);
+
+    setCollectPaymentModalOpen(false);
+    setCollectPaymentTarget(null);
+
+    // 1. Optimistic update
+    updateAppointment(target.id, {
       paymentStatus: 'Paid',
-      paymentMethod: selectedPaymentMethod,
+      paymentMethod: finalMethod,
       status: finalStatus
     });
     setAppointments(getAppointments());
 
-    // Sync to linked POS order in orderStorage so CRM, Cash Management, and Invoices update immediately
+    // 2. Persist to PostgreSQL database directly
     try {
-      const allOrders = getOrders();
-      const cleanPhone = (p) => String(p || '').replace(/\D/g, '');
-      const targetPhone = cleanPhone(collectPaymentTarget.mobile);
-      const targetGuest = (collectPaymentTarget.guest || '').trim().toLowerCase();
+      let linkedOrderId = target.posOrderId;
+      const isUuid = (val) => typeof val === 'string' && /^[0-9a-fA-F-]{36}$/.test(val);
 
-      const matchedOrder = allOrders.find(o => 
-        (collectPaymentTarget.orderId && (String(o.id) === String(collectPaymentTarget.orderId) || String(o.invoiceId) === String(collectPaymentTarget.orderId) || String(o.invoiceNo) === String(collectPaymentTarget.orderId))) ||
-        (collectPaymentTarget.invoiceId && (String(o.invoiceId) === String(collectPaymentTarget.invoiceId) || String(o.id) === String(collectPaymentTarget.invoiceId) || String(o.invoiceNo) === String(collectPaymentTarget.invoiceId))) ||
-        (o.appointmentId && String(o.appointmentId) === String(collectPaymentTarget.id)) ||
-        (targetPhone && cleanPhone(o.guest?.mobile) && (targetPhone.endsWith(cleanPhone(o.guest?.mobile)) || cleanPhone(o.guest?.mobile).endsWith(targetPhone)) && (o.date === collectPaymentTarget.date || o.dateDisplay === collectPaymentTarget.date)) ||
-        (targetGuest && (o.guest?.name || '').trim().toLowerCase() === targetGuest && (o.date === collectPaymentTarget.date || o.dateDisplay === collectPaymentTarget.date))
-      );
+      // If direct appointment in DB doesn't have a POS order yet, check out to POS
+      if (!linkedOrderId && isUuid(target.id)) {
+        try {
+          const checkoutRes = await appointmentApi.checkout(target.id);
+          if (checkoutRes?.success && checkoutRes?.data?.id) {
+            linkedOrderId = checkoutRes.data.id;
+          }
+        } catch (checkoutErr) {
+          // If already checked out, retrieve existing appointment to find posOrderId
+          try {
+            const getRes = await appointmentApi.getAppointmentById(target.id);
+            if (getRes?.data?.posOrderId) {
+              linkedOrderId = getRes.data.posOrderId;
+            }
+          } catch (_) {}
+        }
+      }
 
-      const orderIdToUpdate = matchedOrder?.id || matchedOrder?.invoiceId || matchedOrder?.invoiceNo || collectPaymentTarget.orderId || collectPaymentTarget.invoiceId;
-      if (orderIdToUpdate) {
-        updateOrder(orderIdToUpdate, {
+      // If still no linkedOrderId, look up in current in-memory orders
+      if (!linkedOrderId) {
+        const allOrders = getOrders();
+        const cleanPhone = (p) => String(p || '').replace(/\D/g, '');
+        const targetPhone = cleanPhone(target.mobile);
+        const targetGuest = (target.guest || '').trim().toLowerCase();
+
+        const matchedOrder = allOrders.find(o => 
+          (target.orderId && (String(o.id) === String(target.orderId) || String(o.invoiceId) === String(target.orderId) || String(o.invoiceNo) === String(target.orderId))) ||
+          (target.invoiceId && (String(o.invoiceId) === String(target.invoiceId) || String(o.id) === String(target.invoiceId) || String(o.invoiceNo) === String(target.invoiceId))) ||
+          (o.appointmentId && String(o.appointmentId) === String(target.id)) ||
+          (targetPhone && cleanPhone(o.guest?.mobile) && (targetPhone.endsWith(cleanPhone(o.guest?.mobile)) || cleanPhone(o.guest?.mobile).endsWith(targetPhone)) && (o.date === target.date || o.dateDisplay === target.date)) ||
+          (targetGuest && (o.guest?.name || '').trim().toLowerCase() === targetGuest && (o.date === target.date || o.dateDisplay === target.date))
+        );
+
+        linkedOrderId = matchedOrder?.id || matchedOrder?.invoiceId || target.orderId || target.invoiceId || (isUuid(target.id) ? target.id : null);
+      }
+
+      if (linkedOrderId) {
+        await updateOrder(linkedOrderId, {
           paymentStatus: 'Paid',
-          paymentMethod: selectedPaymentMethod,
-          payments: [{ method: selectedPaymentMethod, amount: collectPaymentTarget.price || collectPaymentTarget.grandTotal || 0 }],
-          status: finalStatus
+          paymentMethod: finalMethod,
+          payments: [{ method: finalMethod, amount: amountToCollect }],
+          status: 'Completed'
         });
       }
-    } catch (e) {
-      console.error('Failed to sync payment to linked POS order:', e);
-    }
 
-    setCollectPaymentModalOpen(false);
-    setCollectPaymentTarget(null);
+      // 3. Re-sync fresh appointments and orders from PostgreSQL database
+      const freshAppts = await fetchAppointmentsFromBackend();
+      if (freshAppts && freshAppts.length > 0) {
+        setAppointments(freshAppts);
+      }
+    } catch (e) {
+      console.error('Failed to sync payment to database:', e);
+    }
   };
 
   // Filter appointments by Status & Search Query
@@ -1286,7 +1482,17 @@ export default function AppointmentPage() {
   };
 
   const renderPaymentMethodBadge = (appt) => {
-    const isPaid = appt.paymentStatus === 'Paid';
+    const isPaid = (appt.paymentStatus === 'Paid' || appt.isPaid === true);
+
+    // If unpaid, it is Due on Visit / Pay at Salon
+    if (!isPaid) {
+      return (
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+          <Clock size={12} className="text-amber-600 shrink-0" />
+          <span>Pay at Salon</span>
+        </span>
+      );
+    }
 
     // 1. Multiple split payments
     if (isPaid && Array.isArray(appt.payments) && appt.payments.length > 1) {
@@ -1405,7 +1611,7 @@ export default function AppointmentPage() {
             type="button"
             onClick={handleSelectToday}
             className={`text-xs font-bold rounded-lg px-3 py-1.5 transition-all shadow-xs cursor-pointer border ${
-              filterByDate && selectedDate === '18-Sep-2026'
+              filterByDate && selectedDate === formatDateDDMMMYYYY(new Date())
                 ? 'bg-indigo-600 text-white border-indigo-600'
                 : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
             }`}
@@ -1548,7 +1754,14 @@ export default function AppointmentPage() {
 
             <div className="flex items-center justify-between sm:justify-end gap-2.5 text-xs text-slate-500">
               <span className="font-medium">
-                Showing <strong className="text-slate-800 font-bold">{filteredAppointments.length}</strong> {filterByDate ? `for ${selectedDate}` : 'total'}
+                {isLoading ? (
+                  <span className="inline-flex items-center gap-1.5 text-slate-400">
+                    <Loader2 size={13} className="animate-spin text-indigo-600" />
+                    <span>Loading database records...</span>
+                  </span>
+                ) : (
+                  <>Showing <strong className="text-slate-800 font-bold">{filteredAppointments.length}</strong> {filterByDate ? `for ${selectedDate}` : 'total'}</>
+                )}
               </span>
               {filterByDate ? (
                 <span className="bg-indigo-50 text-indigo-700 font-semibold px-2.5 py-0.5 rounded-full border border-indigo-200 text-[11px] flex items-center gap-1">
@@ -1577,7 +1790,17 @@ export default function AppointmentPage() {
 
           {/* Table Container */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-            {filteredAppointments.length > 0 ? (
+            {isLoading ? (
+              <div className="py-24 text-center">
+                <div className="w-14 h-14 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-xs">
+                  <Loader2 size={26} className="animate-spin text-indigo-600" />
+                </div>
+                <h4 className="text-base font-bold text-slate-800 mb-1">Loading Appointments...</h4>
+                <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                  Fetching latest orders and appointments from database
+                </p>
+              </div>
+            ) : filteredAppointments.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
@@ -1645,9 +1868,11 @@ export default function AppointmentPage() {
                           <td className="py-3.5 px-4">
                             <div className="font-semibold text-slate-800 text-xs">{appt.service}</div>
                             <div className="flex items-center gap-2 mt-0.5">
-                              <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.2 rounded font-medium">
-                                {appt.duration || '45 min'}
-                              </span>
+                              {getApptDurationDisplay(appt) && (
+                                <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.2 rounded font-medium">
+                                  {getApptDurationDisplay(appt)}
+                                </span>
+                              )}
                               {appt.instruction && (
                                 <span className="text-[10px] text-slate-400 italic truncate max-w-[160px]" title={appt.instruction}>
                                   "{appt.instruction}"
@@ -1658,16 +1883,29 @@ export default function AppointmentPage() {
 
                           {/* 3. Assigned Staff */}
                           <td className="py-3.5 px-4">
-                            <button
-                              type="button"
-                              onClick={() => handleOpenChangeStaff(appt)}
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-300 rounded-lg text-slate-700 hover:text-indigo-700 font-semibold text-xs transition-all cursor-pointer group shadow-2xs"
-                              title="Click to edit / change assigned staff"
-                            >
-                              <Scissors size={12} className="text-indigo-600 shrink-0" />
-                              <span>{appt.staff}</span>
-                              <Pencil size={11} className="text-slate-400 group-hover:text-indigo-600 ml-0.5 opacity-60 group-hover:opacity-100 transition-opacity" />
-                            </button>
+                            {(!appt.staff || appt.staff === 'Unassigned' || appt.staff === '—') ? (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenChangeStaff(appt)}
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-800 rounded-lg font-bold text-xs transition-all cursor-pointer group shadow-2xs"
+                                title="No staff assigned yet — Click to assign staff"
+                              >
+                                <Scissors size={12} className="text-amber-600 shrink-0" />
+                                <span>Unassigned</span>
+                                <Pencil size={11} className="text-amber-600 group-hover:scale-110 ml-0.5 transition-transform" />
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenChangeStaff(appt)}
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-300 rounded-lg text-slate-700 hover:text-indigo-700 font-semibold text-xs transition-all cursor-pointer group shadow-2xs"
+                                title="Click to edit / change assigned staff"
+                              >
+                                <Scissors size={12} className="text-indigo-600 shrink-0" />
+                                <span>{appt.staff}</span>
+                                <Pencil size={11} className="text-slate-400 group-hover:text-indigo-600 ml-0.5 opacity-60 group-hover:opacity-100 transition-opacity" />
+                              </button>
+                            )}
                           </td>
 
                           {/* 4. Time Slot & Date */}
@@ -1687,7 +1925,7 @@ export default function AppointmentPage() {
                               <div className="space-y-1">
                                 <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
                                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                                  {appt.paymentMethod === 'Cash' || appt.paymentMethod === 'GPay' || appt.paymentMethod === 'Card' ? 'Paid' : 'Paid Advance'}
+                                  Paid
                                 </span>
                                 <div className="text-xs font-mono font-bold text-slate-800">
                                   ₹{appt.price || 200}
@@ -1813,7 +2051,7 @@ export default function AppointmentPage() {
 
                               {/* Delete Appointment */}
                               <button
-                                onClick={() => handleDeleteAppointment(appt.id)}
+                                onClick={() => handleDeleteAppointment(appt)}
                                 className="p-1.5 hover:bg-rose-50 text-slate-400 hover:text-rose-600 rounded-lg transition-colors cursor-pointer"
                                 title="Delete Appointment"
                               >
@@ -1902,7 +2140,14 @@ export default function AppointmentPage() {
             </div>
 
             <div className="text-xs text-slate-500 font-medium flex items-center gap-2">
-              <span>Showing <strong>{dateFilteredAppointments.length}</strong> orders on <strong>{filterByDate ? selectedDate : 'All Dates'}</strong></span>
+              {isLoading ? (
+                <span className="inline-flex items-center gap-1.5 text-slate-400">
+                  <Loader2 size={13} className="animate-spin text-indigo-600" />
+                  <span>Loading database records...</span>
+                </span>
+              ) : (
+                <span>Showing <strong>{dateFilteredAppointments.length}</strong> orders on <strong>{filterByDate ? selectedDate : 'All Dates'}</strong></span>
+              )}
             </div>
           </div>
 
@@ -1972,7 +2217,7 @@ export default function AppointmentPage() {
                       const matchingAppts = appointments.filter(a => {
                         const staffMatch = (a.staff?.trim().toLowerCase() === staffName?.trim().toLowerCase());
                         const timeMatch = (a.timeSlot?.trim().toLowerCase() === time?.trim().toLowerCase());
-                        const dateMatch = (!filterByDate || (a.date || '18-Sep-2026') === selectedDate);
+                        const dateMatch = (!filterByDate || (a.date || formatDateDDMMMYYYY(new Date())) === selectedDate);
                         const statusMatch = (activeFilter === 'Total' || a.status === activeFilter);
                         return staffMatch && timeMatch && dateMatch && statusMatch;
                       });
@@ -2014,7 +2259,7 @@ export default function AppointmentPage() {
                                   </div>
                                   <div className="text-[11px] opacity-90 truncate font-medium">{appt.service}</div>
                                   <div className="flex items-center justify-between text-[10px] opacity-80 font-mono mt-0.5">
-                                    <span>{appt.duration || '45 min'}</span>
+                                    <span>{getApptDurationDisplay(appt) || ''}</span>
                                     <span className="font-bold font-mono">₹{appt.price}</span>
                                   </div>
                                 </div>
@@ -2110,11 +2355,7 @@ export default function AppointmentPage() {
                             </div>
                             <div className="text-[11px] text-slate-500 font-mono flex items-center gap-1.5 mt-0.5">
                               <span>{c.mobile || 'No mobile'}</span>
-                              {c.loyalty && (
-                                <span className="bg-amber-50 text-amber-700 text-[9px] px-1.5 py-0.2 rounded font-semibold border border-amber-200">
-                                  {c.loyalty}
-                                </span>
-                              )}
+
                             </div>
                           </div>
                           <button
@@ -2423,7 +2664,6 @@ export default function AppointmentPage() {
                       <option value="Phone Pay">PhonePe (Advance Payment)</option>
                       <option value="Card">Credit / Debit Card</option>
                       <option value="HDFC">HDFC Bank Transfer</option>
-                      <option value="Balance">Customer Wallet Balance</option>
                     </select>
                   </div>
 
@@ -2441,7 +2681,7 @@ export default function AppointmentPage() {
                       >
                         <span className="w-1.5 h-1.5 rounded-full bg-current" />
                         {appointmentForm.paymentStatus === 'Paid'
-                          ? `Paid Advance (₹${appointmentForm.price || 200})`
+                          ? `Paid (₹${appointmentForm.price || 200})`
                           : 'Due on Visit (Unpaid)'}
                       </span>
                     </div>

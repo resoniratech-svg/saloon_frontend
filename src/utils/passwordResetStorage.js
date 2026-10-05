@@ -1,41 +1,26 @@
 import { getTenants, updateTenant } from './saasStorage';
-import { getCashiersForTenant } from './cashierStorage';
+import { getCashiersForTenant, updateCashier } from './cashierStorage';
 
 const RESET_STORAGE_KEY = 'respark_password_reset_requests';
 
 // Password Reset Requests Queue (starts clean, populated only by real user requests)
-export const getResetRequests = () => {
+let inMemoryResetRequests = [];
+
+export const purgeLocalResetRequests = () => {
   try {
-    const data = localStorage.getItem(RESET_STORAGE_KEY);
-    let parsed = [];
-    if (data) {
-      const raw = JSON.parse(data);
-      if (Array.isArray(raw)) {
-        const tenants = getTenants();
-        // Only keep legitimate requests belonging to currently registered salons, purging any mock/demo entries
-        parsed = raw.filter(r => 
-          !r.id.startsWith('rst_demo_') && 
-          tenants.some(t => t.id === r.tenantId)
-        );
-        if (parsed.length !== raw.length) {
-          localStorage.setItem(RESET_STORAGE_KEY, JSON.stringify(parsed));
-        }
-      }
-    }
-    return parsed;
-  } catch (err) {
-    console.error('Failed to load reset requests', err);
-    return [];
-  }
+    localStorage.removeItem(RESET_STORAGE_KEY);
+  } catch (e) {}
+};
+
+purgeLocalResetRequests();
+
+export const getResetRequests = () => {
+  return [...inMemoryResetRequests];
 };
 
 export const saveResetRequests = (requests) => {
-  try {
-    localStorage.setItem(RESET_STORAGE_KEY, JSON.stringify(requests));
-    window.dispatchEvent(new Event('passwordResetsUpdated'));
-  } catch (err) {
-    console.error('Failed to save reset requests', err);
-  }
+  inMemoryResetRequests = Array.isArray(requests) ? requests : [];
+  window.dispatchEvent(new Event('passwordResetsUpdated'));
 };
 
 // Find account and submit a password reset request
@@ -335,21 +320,9 @@ export const completePasswordReset = (requestId, newPassword) => {
     // Update company admin password in saasStorage
     updateTenant(target.tenantId, { adminPassword: newPassword });
   } else if (target.role === 'CASHIER') {
-    // Update cashier password in cashierStorage
+    // Update cashier password in memory
     try {
-      const key = `respark_cashiers_${target.tenantId}`;
-      const data = localStorage.getItem(key);
-      if (data) {
-        const cashiers = JSON.parse(data);
-        const updated = cashiers.map(c => {
-          if (c.id === target.userId) {
-            return { ...c, password: newPassword };
-          }
-          return c;
-        });
-        localStorage.setItem(key, JSON.stringify(updated));
-        window.dispatchEvent(new Event('cashiersUpdated'));
-      }
+      updateCashier(target.userId, { password: newPassword });
     } catch (e) {
       console.error('Failed to update cashier password', e);
     }

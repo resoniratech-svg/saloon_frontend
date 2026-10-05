@@ -44,7 +44,7 @@ export const services = {
 };
 
 export const staffMembers = [
-  { id: 1, name: 'Respark Trial' },
+  { id: 1, name: 'Siri H' },
   { id: 2, name: 'Sohum K' },
   { id: 3, name: 'Swati R' },
   { id: 4, name: 'Akshay D' },
