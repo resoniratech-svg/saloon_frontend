@@ -226,8 +226,9 @@ export const authApi = {
         password: password.trim(),
       }),
     });
-    if (res?.data?.token) {
-      setToken(res.data.token);
+    const token = res?.data?.token || res?.token;
+    if (token) {
+      setToken(token);
     }
     return res;
   },
@@ -260,9 +261,11 @@ export const authApi = {
     });
   },
 
-  changePassword: async (currentPassword, newPassword) => {
+  changePassword: async (currentPassword, newPassword, customToken = null) => {
+    const token = customToken || getToken();
     return apiFetch('/auth/change-password', {
       method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: JSON.stringify({
         currentPassword,
         newPassword,

@@ -9,7 +9,7 @@ import {
   setActiveTenant,
   setCurrentUser,
 } from '../utils/saasStorage';
-import { authApi, purgeLegacyMockAuthData } from '../api/client';
+import { authApi, purgeLegacyMockAuthData, getToken, setToken } from '../api/client';
 
 const LoginPage = () => {
   const [username, setUsername] = useState('');
@@ -33,6 +33,7 @@ const LoginPage = () => {
   // Forced Set New Password Modal States (When logging in with mustChangePassword = true)
   const [showForceResetModal, setShowForceResetModal] = useState(false);
   const [activeTempResetUser, setActiveTempResetUser] = useState(null);
+  const [tempAuthToken, setTempAuthToken] = useState(null);
   const [newPasswordForm, setNewPasswordForm] = useState({
     tempPassword: '',
     newPassword: '',
@@ -114,6 +115,12 @@ const LoginPage = () => {
       const res = await authApi.login(cleanUser, cleanPass);
       const authData = res.data;
       const sessionUser = syncUserSession(authData);
+      const authToken = authData?.token || res?.token || res?.data?.token;
+
+      if (authToken) {
+        setToken(authToken);
+        setTempAuthToken(authToken);
+      }
 
       if (authData.user?.mustChangePassword) {
         setActiveTempResetUser(sessionUser);
@@ -151,7 +158,8 @@ const LoginPage = () => {
 
     setIsSubmittingReset(true);
     try {
-      await authApi.changePassword(newPasswordForm.tempPassword, newPasswordForm.newPassword);
+      const activeToken = tempAuthToken || getToken();
+      await authApi.changePassword(newPasswordForm.tempPassword, newPasswordForm.newPassword, activeToken);
       setShowForceResetModal(false);
 
       if (activeTempResetUser) {
