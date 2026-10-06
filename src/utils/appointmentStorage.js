@@ -500,9 +500,40 @@ export const updateAppointment = async (id, updates) => {
     String(a.invoiceId) === String(id)
   );
 
+  const slot12 = updates.timeSlot 
+    ? formatTo12HourTime(updates.timeSlot) 
+    : (target?.timeSlot ? formatTo12HourTime(target.timeSlot) : '09:00 AM');
+  const time24 = parseTo24HourTime(updates.timeSlot || target?.timeSlot);
+  const isoDate = parseToIsoDate(updates.date || target?.date);
+
+  // Compute updated notes & instruction if slot is updated
+  let updatedNotes = target?.notes || '';
+  let updatedInstruction = target?.instruction || '';
+  if (updates.timeSlot) {
+    if (updatedNotes.includes('Slot:')) {
+      updatedNotes = updatedNotes.replace(/Slot:\s*([0-9]{1,2}:[0-9]{2}(?:\s*[AP]M)?)/i, `Slot: ${slot12}`);
+    } else if (updatedNotes) {
+      updatedNotes = `${updatedNotes} | Slot: ${slot12}`;
+    } else {
+      updatedNotes = `Slot: ${slot12}`;
+    }
+
+    if (updatedInstruction.includes('Slot:')) {
+      updatedInstruction = updatedInstruction.replace(/Slot:\s*([0-9]{1,2}:[0-9]{2}(?:\s*[AP]M)?)/i, `Slot: ${slot12}`);
+    } else if (!updatedInstruction || updatedInstruction === 'Booked in POS') {
+      updatedInstruction = `Slot: ${slot12}`;
+    }
+  }
+
   inMemoryAppointments = inMemoryAppointments.map(a => 
     (String(a.id) === String(id) || String(a.backendId) === String(id) || String(a.orderId) === String(id) || String(a.invoiceId) === String(id))
-      ? { ...a, ...updates }
+      ? { 
+          ...a, 
+          ...updates, 
+          timeSlot: updates.timeSlot ? slot12 : a.timeSlot,
+          notes: updates.timeSlot ? updatedNotes : a.notes,
+          instruction: updates.timeSlot ? updatedInstruction : a.instruction 
+        }
       : a
   );
   window.dispatchEvent(new CustomEvent('appointmentsUpdated'));
@@ -535,22 +566,37 @@ export const updateAppointment = async (id, updates) => {
         }
 
         const posPayload = {};
-        if (updates.staffId || updates.staff) {
-          let resolvedStaffId = updates.staffId;
-          if (!resolvedStaffId && updates.staff) {
-            const allStaff = getMasterStaff();
-            const s = allStaff.find(st => (typeof st === 'string' ? st : st.name)?.trim().toLowerCase() === updates.staff.trim().toLowerCase());
-            if (s?.id) resolvedStaffId = s.id;
-          }
-          if (resolvedStaffId) posPayload.staffId = resolvedStaffId;
+        let resolvedStaffId = updates.staffId;
+        if (!resolvedStaffId && updates.staff) {
+          const allStaff = getMasterStaff();
+          const s = allStaff.find(st => (typeof st === 'string' ? st : st.name)?.trim().toLowerCase() === updates.staff.trim().toLowerCase());
+          if (s?.id) resolvedStaffId = s.id;
         }
+        if (resolvedStaffId) posPayload.staffId = resolvedStaffId;
 
         if (updates.date) {
-          posPayload.orderDate = parseToIsoDate(updates.date);
+          posPayload.orderDate = isoDate;
+        }
+
+        if (updates.timeSlot) {
+          posPayload.notes = updatedNotes;
+          posPayload.instruction = updatedInstruction;
         }
 
         if (Object.keys(posPayload).length > 0) {
-          await posApi.updateOrder(realId, posPayload);
+          await posApi.updateOrder(realId, posPayload).catch(err => {
+            console.warn('Backend posApi.updateOrder failed:', err);
+          });
+        }
+
+        // If there's an associated appointment record, also reschedule it
+        const apptId = target?.appointmentId || (target?.appointmentNumber?.startsWith('APT-') ? target.id : null);
+        if (apptId) {
+          await appointmentApi.reschedule(apptId, {
+            appointmentDate: isoDate,
+            startTime: time24,
+            staffId: resolvedStaffId || undefined,
+          }).catch(() => {});
         }
       } else {
         // Handle direct Appointment update in PostgreSQL appointments & appointment_items
@@ -577,15 +623,20 @@ export const updateAppointment = async (id, updates) => {
         }
 
         if (updates.date || updates.timeSlot) {
-          const isoDate = parseToIsoDate(updates.date || target?.date);
-          const time24 = parseTo24HourTime(updates.timeSlot || target?.timeSlot);
           await appointmentApi.reschedule(realId, {
             appointmentDate: isoDate,
             startTime: time24,
             staffId: resolvedStaffId || undefined,
+          }).catch(err => {
+            console.warn('Backend appointmentApi.reschedule failed:', err);
           });
           if (target?.posOrderId) {
-            await posApi.updateOrder(target.posOrderId, { orderDate: isoDate, staffId: resolvedStaffId || undefined }).catch(() => {});
+            await posApi.updateOrder(target.posOrderId, {
+              orderDate: isoDate,
+              staffId: resolvedStaffId || undefined,
+              notes: updatedNotes,
+              instruction: updatedInstruction,
+            }).catch(() => {});
           }
         } else if (resolvedStaffId) {
           await appointmentApi.updateAppointment(realId, { staffId: resolvedStaffId });

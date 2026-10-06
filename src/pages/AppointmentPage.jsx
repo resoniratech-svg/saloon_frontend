@@ -1221,9 +1221,8 @@ export default function AppointmentPage() {
       staffId: resolvedStaffId || undefined,
     });
     setAppointments(getAppointments());
-    fetchAppointmentsFromBackend().then(appts => {
-      if (appts) setAppointments(appts);
-    });
+    const refreshed = await fetchAppointmentsFromBackend();
+    if (refreshed) setAppointments(refreshed);
   };
 
   const handleOpenChangeStaff = (appt) => {
