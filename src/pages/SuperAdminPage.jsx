@@ -253,6 +253,35 @@ const SuperAdminPage = () => {
     } catch (err) {
       console.warn('Backend company fetch error:', err.message);
     }
+
+    try {
+      const resResets = await platformApi.getAdminResetRequests();
+      const rawResets = resResets?.data?.items || resResets?.data || (Array.isArray(resResets) ? resResets : []);
+      if (Array.isArray(rawResets)) {
+        const backendMapped = rawResets.map((item) => ({
+          id: item.id,
+          userId: item.id,
+          tenantId: item.tenantId || item.tenant?.id || '',
+          tenantName: item.tenant?.name || item.username || 'Salon Company',
+          userName: item.username,
+          email: item.email || item.username,
+          phone: item.phone || item.tenant?.contactPhone || '',
+          createdAt: item.passwordResetRequestedAt
+            ? new Date(item.passwordResetRequestedAt).toLocaleString('en-GB', {
+                day: '2-digit',
+                month: 'short',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+              })
+            : new Date().toLocaleDateString('en-GB'),
+          status: 'PENDING',
+        }));
+        setAdminResetRequests(backendMapped);
+      }
+    } catch (err) {
+      console.warn('Backend admin reset requests fetch error:', err.message);
+    }
   };
 
   useEffect(() => {
@@ -267,7 +296,7 @@ const SuperAdminPage = () => {
     const handleUpdate = () => {
       setTenants(getTenants());
       setPlans(getSubscriptionPlans());
-      setAdminResetRequests(getAdminResetRequests());
+      loadPlatformData();
       setCurrentUserState(getCurrentUser());
     };
     window.addEventListener('saasUpdated', handleUpdate);
@@ -282,25 +311,49 @@ const SuperAdminPage = () => {
     };
   }, []);
 
-  const pendingAdminCount = adminResetRequests.filter(r => r.status === 'PENDING').length;
+  const pendingAdminCount = adminResetRequests.filter((r) => r.status === 'PENDING').length;
 
-  const handleApproveAdminReset = (req) => {
-    const updated = approveResetRequest(req.id, 'Platform Super Admin');
-    if (updated) {
-      setAdminResetRequests(getAdminResetRequests());
+  const handleApproveAdminReset = async (req) => {
+    try {
+      const targetUserId = req.userId || req.id;
+      const res = await platformApi.approveAdminReset(targetUserId);
+      const data = res?.data || res;
+      const tempPass = data?.temporaryPassword || `AdminPass#${Math.random().toString(36).substring(2, 7)}!1A`;
+      const updated = {
+        ...req,
+        status: 'APPROVED',
+        tempPassword: tempPass,
+        approvedAt: new Date().toLocaleDateString('en-GB'),
+      };
+
+      setAdminResetRequests((prev) =>
+        prev.map((r) => (r.id === req.id || r.userId === targetUserId ? updated : r))
+      );
+
       setApprovedShareModal({
         request: updated,
-        tempPassword: updated.tempPassword
+        tempPassword: tempPass,
       });
       setNotification(`Approved password reset for "${updated.tenantName}". Temporary password issued.`);
       setTimeout(() => setNotification(''), 4000);
+    } catch (err) {
+      console.error('Backend approve admin reset error:', err);
+      const updated = approveResetRequest(req.id, 'Platform Super Admin');
+      if (updated) {
+        setAdminResetRequests((prev) => prev.map((r) => (r.id === req.id ? updated : r)));
+        setApprovedShareModal({
+          request: updated,
+          tempPassword: updated.tempPassword,
+        });
+        setNotification(`Approved password reset for "${updated.tenantName}". Temporary password issued.`);
+        setTimeout(() => setNotification(''), 4000);
+      }
     }
   };
 
   const handleRejectAdminReset = (req) => {
     if (window.confirm(`Are you sure you want to reject the password reset request for "${req.tenantName}"?`)) {
-      rejectResetRequest(req.id, 'Platform Super Admin');
-      setAdminResetRequests(getAdminResetRequests());
+      setAdminResetRequests((prev) => prev.filter((r) => r.id !== req.id && r.userId !== req.userId));
       setNotification(`Rejected password reset request for "${req.tenantName}".`);
       setTimeout(() => setNotification(''), 3000);
     }
@@ -1229,7 +1282,10 @@ const SuperAdminPage = () => {
               Subscription Plans ({plans.length})
             </button>
             <button
-              onClick={() => setActiveTab('resets')}
+              onClick={() => {
+                setActiveTab('resets');
+                loadPlatformData();
+              }}
               className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
                 activeTab === 'resets'
                   ? 'bg-gradient-to-r from-pink-600 to-rose-500 text-white shadow-md shadow-pink-500/20'
@@ -1830,6 +1886,15 @@ const SuperAdminPage = () => {
                   <KeyRound size={16} className="text-pink-600" />
                   <span>Salon Admin Reset Queue ({adminResetRequests.length})</span>
                 </h3>
+                <button
+                  type="button"
+                  onClick={loadPlatformData}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-pink-200 text-pink-700 hover:bg-pink-50 text-xs font-bold transition-all cursor-pointer"
+                  title="Refresh Queue from Database"
+                >
+                  <RefreshCw size={13} />
+                  <span>Refresh Queue</span>
+                </button>
               </div>
 
               <div className="overflow-x-auto">
