@@ -384,6 +384,21 @@ const SuperAdminPage = () => {
     setDeleteError('');
 
     try {
+      // 1. Authenticate with Super Admin email & entered password to obtain/refresh token
+      try {
+        const loginRes = await authApi.login('saloonqubexe@gmail.com', deletePassword.trim());
+        if (!loginRes?.data?.token && !loginRes?.token) {
+          throw new Error('Authentication failed');
+        }
+      } catch (authErr) {
+        console.warn('Super Admin password check failed:', authErr);
+        const errMsg = authErr?.data?.message || authErr?.message || 'Incorrect Super Admin password. Deletion cancelled.';
+        setDeleteError(errMsg.includes('credentials') || errMsg.includes('password') || errMsg.includes('Invalid') ? 'Incorrect Super Admin password. Deletion cancelled.' : errMsg);
+        setIsDeleting(false);
+        return;
+      }
+
+      // 2. Perform permanent cascade deletion in PostgreSQL
       await platformApi.deleteCompany(deleteModalTenant.id, deletePassword.trim());
       deleteTenant(deleteModalTenant.id);
       setTenants((prev) => prev.filter((t) => t.id !== deleteModalTenant.id));
