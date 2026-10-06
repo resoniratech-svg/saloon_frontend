@@ -74,6 +74,13 @@ const SuperAdminPage = () => {
   const [adminResetRequests, setAdminResetRequests] = useState(() => getAdminResetRequests());
   const [approvedShareModal, setApprovedShareModal] = useState(null);
   const [copySuccess, setCopySuccess] = useState(false);
+  
+  // Permanent Delete Company Modal State
+  const [deleteModalTenant, setDeleteModalTenant] = useState(null);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
+
   const [subForm, setSubForm] = useState({
     planId: 'plan_growth',
     customPrice: '',
@@ -363,6 +370,34 @@ const SuperAdminPage = () => {
     navigator.clipboard.writeText(pass);
     setCopySuccess(true);
     setTimeout(() => setCopySuccess(false), 2500);
+  };
+
+  const handleConfirmDeleteCompany = async (e) => {
+    if (e) e.preventDefault();
+    if (!deleteModalTenant) return;
+    if (!deletePassword.trim()) {
+      setDeleteError('Please enter your Super Admin password to confirm deletion.');
+      return;
+    }
+
+    setIsDeleting(true);
+    setDeleteError('');
+
+    try {
+      await platformApi.deleteCompany(deleteModalTenant.id, deletePassword.trim());
+      deleteTenant(deleteModalTenant.id);
+      setTenants((prev) => prev.filter((t) => t.id !== deleteModalTenant.id));
+      setNotification(`Company "${deleteModalTenant.companyName}" and all associated data permanently deleted.`);
+      setTimeout(() => setNotification(''), 4000);
+      setDeleteModalTenant(null);
+      setDeletePassword('');
+    } catch (err) {
+      console.error('Delete company error:', err);
+      const msg = err?.data?.message || err?.message || 'Incorrect Super Admin password. Deletion cancelled.';
+      setDeleteError(msg);
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   // Compute Platform Metrics (Only valid active plans count towards MRR and Active counts)
@@ -1671,13 +1706,12 @@ const SuperAdminPage = () => {
                               {/* Delete Tenant */}
                               <button
                                 onClick={() => {
-                                  if (window.confirm(`Are you sure you want to delete ${tenant.companyName}?`)) {
-                                    deleteTenant(tenant.id);
-                                    setNotification(`Deleted ${tenant.companyName}`);
-                                  }
+                                  setDeleteModalTenant(tenant);
+                                  setDeletePassword('');
+                                  setDeleteError('');
                                 }}
                                 className="p-1.5 hover:bg-rose-50 text-slate-400 hover:text-rose-600 rounded-lg transition-colors cursor-pointer"
-                                title="Delete Company"
+                                title="Delete Company Permanently"
                               >
                                 <Trash2 size={15} />
                               </button>
@@ -3682,6 +3716,131 @@ const SuperAdminPage = () => {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* PERMANENT COMPANY DELETE CONFIRMATION MODAL */}
+      {/* ======================================================== */}
+      {deleteModalTenant && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden border border-rose-200 animate-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="p-6 bg-gradient-to-r from-rose-50 via-red-50 to-orange-50 border-b border-rose-100 flex items-start gap-4">
+              <div className="w-12 h-12 rounded-xl bg-rose-100 border border-rose-300 flex items-center justify-center text-rose-600 shrink-0 shadow-xs">
+                <Trash2 size={24} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-bold text-slate-900">
+                    Delete Company Permanently
+                  </h3>
+                  <button
+                    onClick={() => {
+                      if (!isDeleting) {
+                        setDeleteModalTenant(null);
+                        setDeletePassword('');
+                        setDeleteError('');
+                      }
+                    }}
+                    disabled={isDeleting}
+                    className="p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-white/80 transition-colors"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+                <p className="text-xs text-rose-700 font-semibold mt-0.5">
+                  High-Risk Action • Irreversible Permanent Data Wipeout
+                </p>
+              </div>
+            </div>
+
+            {/* Form */}
+            <form onSubmit={handleConfirmDeleteCompany} className="p-6 space-y-4">
+              {/* Warning message box */}
+              <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-slate-800 text-xs space-y-2">
+                <div className="flex items-center gap-2 text-rose-700 font-bold text-sm">
+                  <AlertTriangle size={18} className="shrink-0 text-rose-600" />
+                  <span>Warning: No Restore Possible</span>
+                </div>
+                <p className="leading-relaxed">
+                  Are you sure you want to delete <span className="font-bold text-slate-900 underline">{deleteModalTenant.companyName}</span>?
+                </p>
+                <p className="text-rose-900 leading-relaxed font-medium">
+                  This will completely and permanently erase this company and all its data (including all bills, invoices, transactions, inventory, staff, clients, and user accounts).
+                </p>
+                <div className="inline-block bg-rose-600 text-white font-bold text-[11px] px-2.5 py-1 rounded-md mt-1">
+                  THERE IS NO RESTORE FOR THIS ACTION.
+                </div>
+              </div>
+
+              {/* Password Input Field */}
+              <div className="space-y-1.5 pt-1">
+                <label className="block text-xs font-bold text-slate-700">
+                  Enter Super Admin Password to Confirm: <span className="text-rose-600">*</span>
+                </label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                    <Lock size={16} />
+                  </div>
+                  <input
+                    type="password"
+                    autoFocus
+                    required
+                    value={deletePassword}
+                    onChange={(e) => {
+                      setDeletePassword(e.target.value);
+                      if (deleteError) setDeleteError('');
+                    }}
+                    placeholder="Enter your Super Admin password"
+                    disabled={isDeleting}
+                    className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-medium focus:ring-2 focus:ring-rose-500 focus:border-rose-500 focus:bg-white transition-all disabled:opacity-50"
+                  />
+                </div>
+              </div>
+
+              {/* Error display */}
+              {deleteError && (
+                <div className="p-3 rounded-xl bg-red-100 border border-red-300 text-red-800 text-xs flex items-center gap-2 animate-in fade-in">
+                  <AlertTriangle size={16} className="shrink-0 text-red-600" />
+                  <span className="font-medium">{deleteError}</span>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeleteModalTenant(null);
+                    setDeletePassword('');
+                    setDeleteError('');
+                  }}
+                  disabled={isDeleting}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isDeleting || !deletePassword.trim()}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-md shadow-rose-600/30 transition-all cursor-pointer"
+                >
+                  {isDeleting ? (
+                    <>
+                      <RefreshCw size={14} className="animate-spin" />
+                      <span>Permanently Deleting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 size={14} />
+                      <span>Permanently Delete Company</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

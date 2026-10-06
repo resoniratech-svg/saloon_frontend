@@ -1324,6 +1324,12 @@ export const platformApi = {
       body: JSON.stringify({ isActive, reason }),
     });
   },
+  deleteCompany: async (id, password) => {
+    return apiFetch(`/platform/companies/${id}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ password, superAdminPassword: password }),
+    });
+  },
   updateSubscription: async (id, data) => {
     return apiFetch(`/platform/companies/${id}/subscription`, {
       method: 'PATCH',
