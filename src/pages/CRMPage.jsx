@@ -5,6 +5,7 @@ import { getCustomers, saveCustomers, addCustomer, updateCustomer, deleteCustome
 import { getOrders, updateOrder } from '../utils/orderStorage';
 import { getAppointments } from '../utils/appointmentStorage';
 import { isReadOnlySession, notifyReadOnlyBlocked } from '../utils/saasStorage';
+import { getPackages } from '../utils/packageStorage';
 import InvoiceBillModal from '../components/common/InvoiceBillModal';
 
 // ==========================================
@@ -598,6 +599,42 @@ const getCustomerFullHistory = (customer, allOrders = [], allAppointments = []) 
   // Sort orders newest first
   matchedOrders.sort((a, b) => new Date(b.date || b.dateDisplay || 0) - new Date(a.date || a.dateDisplay || 0));
 
+  // 1b. Tally all redeemed package sessions across matched orders
+  const redeemedCountByPkg = {};
+  matchedOrders.forEach(o => {
+    (o.items || []).forEach(item => {
+      const isRedeem = item.itemType === 'package_redemption' ||
+                       item.category === 'PACKAGE_REDEMPTION' ||
+                       (item.header && String(item.header).toUpperCase() === 'PACKAGE_REDEMPTION') ||
+                       (item.name && String(item.name).toLowerCase().startsWith('redemption:'));
+      if (isRedeem) {
+        const cleanName = String(item.name || '').replace(/^redemption:\s*/i, '').trim().toLowerCase();
+        const qty = Number(item.qty) || 1;
+        if (cleanName) {
+          redeemedCountByPkg[cleanName] = (redeemedCountByPkg[cleanName] || 0) + qty;
+        }
+      }
+    });
+    (o.packageRedemptions || []).forEach(pr => {
+      const cleanName = String(pr.packageName || pr.name || '').replace(/^redemption:\s*/i, '').trim().toLowerCase();
+      const used = Number(pr.sessionsUsed || 1);
+      if (cleanName) {
+        redeemedCountByPkg[cleanName] = Math.max(redeemedCountByPkg[cleanName] || 0, used);
+      }
+    });
+  });
+
+  const masterPackages = getPackages();
+  const findMasterPkg = (name) => {
+    if (!name) return null;
+    const n = String(name).trim().toLowerCase();
+    return masterPackages.find(mp => (mp.name || '').trim().toLowerCase() === n) ||
+           masterPackages.find(mp => {
+             const mpName = (mp.name || '').trim().toLowerCase();
+             return mpName.includes(n) || n.includes(mpName);
+           }) || null;
+  };
+
   // 2. Extract Packages
   const packagesList = [];
   const seenPackageKeys = new Set();
@@ -609,7 +646,13 @@ const getCustomerFullHistory = (customer, allOrders = [], allAppointments = []) 
     : (Array.isArray(customer.guestPackages) ? customer.guestPackages : []);
 
   dbPackages.forEach((pkg, idx) => {
-    const normName = (pkg.name || '').trim().toLowerCase();
+    const rawName = (pkg.name || '').trim();
+    // Exclude any accidental redemption entries
+    if (rawName.toLowerCase().startsWith('redemption:') || pkg.itemType === 'package_redemption' || pkg.category === 'PACKAGE_REDEMPTION') {
+      return;
+    }
+
+    const normName = rawName.toLowerCase();
     seenPackageNames.add(normName);
     if (pkg.id) seenPackageKeys.add(String(pkg.id));
 
@@ -623,23 +666,46 @@ const getCustomerFullHistory = (customer, allOrders = [], allAppointments = []) 
       ? expDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
       : `${pkg.validityDays || 180} Days`;
 
-    const rawStatus = (pkg.status || 'Active').toLowerCase();
-    const statusFormatted = rawStatus.charAt(0).toUpperCase() + rawStatus.slice(1);
+    const masterMatch = findMasterPkg(pkg.name);
+    const totalSessions = (pkg.totalSessions !== undefined && pkg.totalSessions !== null && !isNaN(Number(pkg.totalSessions)))
+      ? Number(pkg.totalSessions)
+      : (masterMatch?.totalSessions ? Number(masterMatch.totalSessions) : null);
+
+    const redeemed = (pkg.redeemedSessions !== undefined && pkg.redeemedSessions !== null)
+      ? Number(pkg.redeemedSessions)
+      : (redeemedCountByPkg[normName] || 0);
+
+    let remainingSessions = pkg.remainingSessions !== undefined && pkg.remainingSessions !== null
+      ? Number(pkg.remainingSessions)
+      : (totalSessions !== null ? Math.max(0, totalSessions - redeemed) : null);
+
+    if (totalSessions !== null && (remainingSessions === null || remainingSessions > (totalSessions - redeemed))) {
+      remainingSessions = Math.max(0, totalSessions - redeemed);
+    }
+
+    let statusFormatted = 'Active';
+    if (remainingSessions === 0) {
+      statusFormatted = 'Completed';
+    } else if (pkg.status) {
+      const rawStatus = String(pkg.status).toLowerCase();
+      statusFormatted = rawStatus.charAt(0).toUpperCase() + rawStatus.slice(1);
+    }
 
     packagesList.push({
       id: pkg.id || `pkg_db_${idx}`,
       name: pkg.name || 'Service Package',
       category: typeof pkg.services === 'string'
         ? pkg.services
-        : (Array.isArray(pkg.services) ? pkg.services.map(s => s.name || s).join(', ') : 'Package Subscription'),
+        : (Array.isArray(pkg.services) ? pkg.services.map(s => s.name || s).join(', ') : (masterMatch?.services || 'Package Subscription')),
       purchaseDate: purchaseDateStr,
-      validityDays: pkg.validityDays || 180,
+      validityDays: pkg.validityDays || masterMatch?.validityDays || 180,
       expiryDate: expiryDateStr,
-      amount: pkg.price || pkg.amount || 0,
+      amount: pkg.price || pkg.amount || masterMatch?.price || 0,
       orderId: pkg.invoiceNumber || pkg.orderId || 'PKG-DB',
       status: statusFormatted,
-      totalSessions: pkg.totalSessions,
-      remainingSessions: pkg.remainingSessions,
+      totalSessions: totalSessions,
+      redeemedSessions: redeemed,
+      remainingSessions: remainingSessions,
     });
   });
 
@@ -647,6 +713,13 @@ const getCustomerFullHistory = (customer, allOrders = [], allAppointments = []) 
   matchedOrders.forEach(o => {
     const oDate = o.dateDisplay || o.date || 'Today';
     (o.items || []).forEach(item => {
+      // Exclude redemptions!
+      const isRedeem = item.itemType === 'package_redemption' || 
+                       item.category === 'PACKAGE_REDEMPTION' || 
+                       (item.header && String(item.header).toUpperCase() === 'PACKAGE_REDEMPTION') ||
+                       (item.name && String(item.name).toLowerCase().startsWith('redemption:'));
+      if (isRedeem) return;
+
       const isPkg = item.itemType === 'package' || 
                     item.category === 'PACKAGE' || 
                     (item.header && item.header.toLowerCase().includes('package')) ||
@@ -661,24 +734,52 @@ const getCustomerFullHistory = (customer, allOrders = [], allAppointments = []) 
           if (oDate && (!existing.purchaseDate || existing.purchaseDate === 'Recent')) {
             existing.purchaseDate = oDate;
           }
+          // If existing had no session tracking, enrich it now
+          if (existing.totalSessions === null || existing.totalSessions === undefined) {
+            const masterMatch = findMasterPkg(existing.name);
+            const total = (item.totalSessions !== undefined && item.totalSessions !== null && !isNaN(Number(item.totalSessions)))
+              ? Number(item.totalSessions)
+              : (masterMatch?.totalSessions ? Number(masterMatch.totalSessions) : null);
+            if (total !== null) {
+              const redeemed = redeemedCountByPkg[normName] || 0;
+              existing.totalSessions = total;
+              existing.redeemedSessions = redeemed;
+              existing.remainingSessions = Math.max(0, total - redeemed);
+              if (existing.remainingSessions === 0) existing.status = 'Completed';
+            }
+          }
         } else {
           const pkgKey = `${normName}_${o.invoiceNo || o.id || oDate}`;
           if (!seenPackageKeys.has(pkgKey)) {
             seenPackageKeys.add(pkgKey);
             seenPackageNames.add(normName);
-            const validityDays = item.validityDays || 180;
+
+            const masterMatch = findMasterPkg(item.name);
+            const validityDays = item.validityDays || masterMatch?.validityDays || 180;
             const pDate = new Date(o.date || Date.now());
             const expDate = new Date(pDate.getTime() + validityDays * 24 * 60 * 60 * 1000);
+
+            const totalSessions = (item.totalSessions !== undefined && item.totalSessions !== null && !isNaN(Number(item.totalSessions)))
+              ? Number(item.totalSessions)
+              : (masterMatch?.totalSessions ? Number(masterMatch.totalSessions) : null);
+
+            const redeemed = redeemedCountByPkg[normName] || 0;
+            const remainingSessions = totalSessions !== null ? Math.max(0, totalSessions - redeemed) : null;
+            const status = remainingSessions === 0 ? 'Completed' : 'Active';
+
             packagesList.push({
               id: item.id || `pkg_${Math.random()}`,
               name: item.name || 'Service Package',
-              category: item.category || 'Package Subscription',
+              category: item.category && item.category !== 'PACKAGE' ? item.category : (masterMatch?.services || 'Package Subscription'),
               purchaseDate: oDate,
               validityDays: validityDays,
               expiryDate: isNaN(expDate.getTime()) ? `${validityDays} Days from visit` : expDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-              amount: item.total || item.price || 0,
+              amount: item.total || item.price || masterMatch?.price || 0,
               orderId: o.invoiceNo || o.invoiceId || o.id,
-              status: 'Active'
+              status: status,
+              totalSessions: totalSessions,
+              redeemedSessions: redeemed,
+              remainingSessions: remainingSessions,
             });
           }
         }
@@ -688,18 +789,27 @@ const getCustomerFullHistory = (customer, allOrders = [], allAppointments = []) 
 
   // C. From customer profile package attribute (only if not already extracted)
   const profilePkgName = (customer.package || '').trim().toLowerCase();
-  if (customer.package && customer.package !== '-' && !seenPackageNames.has(profilePkgName)) {
+  if (customer.package && customer.package !== '-' && !seenPackageNames.has(profilePkgName) && !profilePkgName.startsWith('redemption:')) {
     seenPackageNames.add(profilePkgName);
+    const masterMatch = findMasterPkg(customer.package);
+    const totalSessions = masterMatch?.totalSessions || null;
+    const redeemed = redeemedCountByPkg[profilePkgName] || 0;
+    const remainingSessions = totalSessions !== null ? Math.max(0, totalSessions - redeemed) : null;
+    const status = remainingSessions === 0 ? 'Completed' : 'Active';
+
     packagesList.push({
       id: 'pkg_profile',
       name: customer.package,
-      category: 'Package Subscription',
-      purchaseDate: customer.lastVisited || '26-Sep-2026',
-      validityDays: 180,
-      expiryDate: '25-Mar-2027',
-      amount: customer.totalPurchaseAmount ? Math.min(Number(customer.totalPurchaseAmount), 5000) : 5000,
+      category: masterMatch?.services || 'Package Subscription',
+      purchaseDate: customer.lastVisited || 'Recent',
+      validityDays: masterMatch?.validityDays || 180,
+      expiryDate: '180 Days',
+      amount: masterMatch?.price || (customer.totalPurchaseAmount ? Math.min(Number(customer.totalPurchaseAmount), 5000) : 5000),
       orderId: 'PKG-SUB',
-      status: 'Active'
+      status: status,
+      totalSessions: totalSessions,
+      redeemedSessions: redeemed,
+      remainingSessions: remainingSessions,
     });
   }
 
@@ -1022,7 +1132,11 @@ const CustomerOrderHistoryModal = ({ isOpen, onClose, customer, allOrders, allAp
                       <p className="text-[10px] uppercase font-bold text-slate-400 mb-1.5">Billed Items</p>
                       <div className="space-y-1.5">
                         {(order.items && order.items.length > 0 ? order.items : [{ name: 'Salon Service Visit', qty: 1, price: order.grandTotal }]).map((item, iIdx) => {
-                          const isPkg = item.itemType === 'package' || (item.name && item.name.toLowerCase().includes('package'));
+                          const isRedeem = item.itemType === 'package_redemption' || 
+                                           item.category === 'PACKAGE_REDEMPTION' || 
+                                           (item.header && String(item.header).toUpperCase() === 'PACKAGE_REDEMPTION') ||
+                                           (item.name && String(item.name).toLowerCase().startsWith('redemption:'));
+                          const isPkg = !isRedeem && (item.itemType === 'package' || (item.name && item.name.toLowerCase().includes('package')));
                           const isMem = item.itemType === 'membership' || (item.name && item.name.toLowerCase().includes('membership'));
                           const isProd = item.itemType === 'product';
 
@@ -1030,7 +1144,9 @@ const CustomerOrderHistoryModal = ({ isOpen, onClose, customer, allOrders, allAp
                             <div key={iIdx} className="flex items-center justify-between text-xs bg-slate-50/70 px-3 py-1.5 rounded-lg border border-slate-100">
                               <div className="flex items-center gap-2">
                                 <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase ${
-                                  isPkg
+                                  isRedeem
+                                    ? 'bg-teal-100 text-teal-800 border border-teal-200'
+                                    : isPkg
                                     ? 'bg-purple-100 text-purple-700'
                                     : isMem
                                     ? 'bg-emerald-100 text-emerald-700'
@@ -1038,7 +1154,7 @@ const CustomerOrderHistoryModal = ({ isOpen, onClose, customer, allOrders, allAp
                                     ? 'bg-amber-100 text-amber-700'
                                     : 'bg-indigo-100 text-indigo-700'
                                 }`}>
-                                  {isPkg ? 'Package' : isMem ? 'Membership' : isProd ? 'Product' : 'Service'}
+                                  {isRedeem ? 'Redemption' : isPkg ? 'Package' : isMem ? 'Membership' : isProd ? 'Product' : 'Service'}
                                 </span>
                                 <span className="font-semibold text-slate-800">{item.name}</span>
                                 {item.staff && <span className="text-[11px] text-slate-400">({item.staff})</span>}
@@ -1120,11 +1236,22 @@ const CustomerOrderHistoryModal = ({ isOpen, onClose, customer, allOrders, allAp
                       </div>
                       <div>
                         <span className="text-slate-400 text-[10px] uppercase font-bold block">Sessions</span>
-                        <span className="font-semibold text-slate-700 mt-0.5 block">
-                          {pkg.totalSessions !== undefined && pkg.totalSessions !== null
-                            ? `${pkg.remainingSessions ?? 0} of ${pkg.totalSessions} left`
-                            : 'Unlimited'}
-                        </span>
+                        <div className="mt-0.5">
+                          {pkg.totalSessions !== undefined && pkg.totalSessions !== null ? (
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className={pkg.remainingSessions > 0 ? "font-bold text-slate-800" : "font-semibold text-slate-400"}>
+                                {pkg.remainingSessions ?? 0} of {pkg.totalSessions} left
+                              </span>
+                              {Boolean(pkg.redeemedSessions > 0) && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 font-bold">
+                                  {pkg.redeemedSessions} redeemed
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="font-semibold text-slate-700">Unlimited</span>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1578,10 +1705,15 @@ const CRMPage = () => {
     let orderPackagesCount = 0;
     (matchedOrders || []).forEach(o => {
       (o.items || []).forEach(item => {
+        const isRedeem = item.itemType === 'package_redemption' || 
+                         item.category === 'PACKAGE_REDEMPTION' || 
+                         (item.header && String(item.header).toUpperCase() === 'PACKAGE_REDEMPTION') ||
+                         (item.name && String(item.name).toLowerCase().startsWith('redemption:'));
         if (
-          item.itemType === 'package' || 
-          item.category === 'PACKAGE' || 
-          (item.header && item.header.toLowerCase().includes('package'))
+          !isRedeem &&
+          (item.itemType === 'package' || 
+           item.category === 'PACKAGE' || 
+           (item.header && item.header.toLowerCase().includes('package')))
         ) {
           orderPackagesCount += (item.qty || 1);
           if (item.name) orderPackageNames.push(item.name);
@@ -1589,17 +1721,22 @@ const CRMPage = () => {
       });
     });
 
+    const validCustomerPackages = (Array.isArray(customer.packages) ? customer.packages : []).filter(p => {
+      const pName = typeof p === 'string' ? p : (p?.name || '');
+      return !pName.toLowerCase().startsWith('redemption:') && p?.itemType !== 'package_redemption' && p?.category !== 'PACKAGE_REDEMPTION';
+    });
+
     let packageDisplay = '-';
     let packageCount = 0;
-    if (customer.package && customer.package !== '-') {
+    if (customer.package && customer.package !== '-' && !customer.package.toLowerCase().startsWith('redemption:')) {
       packageDisplay = customer.package;
       packageCount = 1;
     } else if (customer.packageCount && customer.packageCount !== '-' && customer.packageCount !== 0 && customer.packageCount !== '0') {
       packageDisplay = String(customer.packageCount);
       packageCount = Number(customer.packageCount) || 1;
-    } else if (Array.isArray(customer.packages) && customer.packages.length > 0) {
-      packageCount = customer.packages.length;
-      packageDisplay = customer.packages.length === 1 ? (customer.packages[0].name || customer.packages[0]) : `${customer.packages.length} Packages`;
+    } else if (validCustomerPackages.length > 0) {
+      packageCount = validCustomerPackages.length;
+      packageDisplay = validCustomerPackages.length === 1 ? (validCustomerPackages[0].name || validCustomerPackages[0]) : `${validCustomerPackages.length} Packages`;
     } else if (orderPackagesCount > 0) {
       packageCount = orderPackagesCount;
       packageDisplay = orderPackagesCount === 1 ? orderPackageNames[0] : `${orderPackagesCount} Packages`;
