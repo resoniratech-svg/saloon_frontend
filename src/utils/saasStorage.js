@@ -268,6 +268,7 @@ export const getCurrentUser = () => {
       return null;
     }
     const parsed = JSON.parse(data);
+    const activeTenant = getActiveTenant();
 
     if (parsed && (parsed.companyId === 'tenant_glamour' || parsed.companyId === 'tenant_naturals' || parsed.companyId === 'tenant_enrich')) {
       parsed.companyId = activeTenant?.id || '3846baad-5322-49af-b92f-22644ec559a9';

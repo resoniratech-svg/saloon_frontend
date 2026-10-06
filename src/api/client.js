@@ -31,25 +31,31 @@ export const purgeLegacyMockAuthData = () => {
   try {
     const preserveKeys = new Set([
       TOKEN_KEY,
+      'qubexe_jwt_token',
       'respark_token',
       'respark_jwt_token',
       'respark_saas_user',
+      'respark_saas_current_user',
       'respark_saas_active_tenant',
       'respark_saas_active_branch',
       'respark_saas_impersonation'
     ]);
 
-    // Explicitly delete all business entity cache keys
+    // Explicitly delete outdated mock cache keys
     localStorage.removeItem('respark_saas_tenants');
     localStorage.removeItem('respark_saas_plans');
     localStorage.removeItem('respark_master_staff');
     localStorage.removeItem('respark_staff_work_experience');
     localStorage.removeItem('respark_password_reset_requests');
 
-    // Comprehensive scan: delete any business records or dummy keys from localStorage
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const key = localStorage.key(i);
-      if (key && !preserveKeys.has(key)) {
+      if (
+        key &&
+        !preserveKeys.has(key) &&
+        !key.startsWith('respark_cashiers_') &&
+        !key.startsWith('respark_saas_')
+      ) {
         localStorage.removeItem(key);
       }
     }
