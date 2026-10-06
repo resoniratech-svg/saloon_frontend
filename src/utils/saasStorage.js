@@ -262,21 +262,10 @@ export const saveTenants = (tenants) => {
 // ==========================================
 export const getCurrentUser = () => {
   try {
+    const token = localStorage.getItem('qubexe_jwt_token') || localStorage.getItem('respark_jwt_token');
     const data = localStorage.getItem(SAAS_USER_KEY);
-    const activeTenant = getActiveTenant();
-    if (!data) {
-      const defaultUser = {
-        id: 'usr_admin',
-        username: 'admin',
-        name: `${activeTenant?.companyName || activeTenant?.name || 'Company'} Admin`,
-        role: 'COMPANY_ADMIN',
-        companyId: activeTenant?.id || '3846baad-5322-49af-b92f-22644ec559a9',
-        companyName: activeTenant?.companyName || activeTenant?.name || 'Salon ERP',
-        branchId: activeTenant?.branches?.[0]?.id || 'b_1',
-        branchName: activeTenant?.branches?.[0]?.name || 'Main Counter / Branch'
-      };
-      localStorage.setItem(SAAS_USER_KEY, JSON.stringify(defaultUser));
-      return defaultUser;
+    if (!token || !data) {
+      return null;
     }
     const parsed = JSON.parse(data);
 

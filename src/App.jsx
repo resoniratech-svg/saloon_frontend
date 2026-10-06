@@ -18,11 +18,13 @@ import PermissionsPage from './pages/PermissionsPage'
 import CashManagementPage from './pages/CashManagementPage'
 import DashboardLayout from './components/layout/DashboardLayout'
 import { getCurrentUser, getCashierPermissions, getActiveTenant, isPlanFeatureAllowed } from './utils/saasStorage'
+import { getToken } from './api/client'
 
 const RoleGuard = ({ allowedRoles, moduleKey, children, fallback = '/pos' }) => {
+  const token = getToken();
   const user = getCurrentUser();
   const tenant = getActiveTenant();
-  if (!user) return <Navigate to="/login" replace />;
+  if (!token || !user) return <Navigate to="/login" replace />;
   if (allowedRoles && !allowedRoles.includes(user.role)) {
     const redirectPath = user.role === 'STAFF' ? '/appointment' : fallback;
     return <Navigate to={redirectPath} replace />;
@@ -52,7 +54,11 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
-        <Route path="/super-admin" element={<SuperAdminPage />} />
+        <Route path="/super-admin" element={
+          <RoleGuard allowedRoles={['SUPER_ADMIN']} fallback="/login">
+            <SuperAdminPage />
+          </RoleGuard>
+        } />
         <Route path="/" element={<DashboardLayout />}>
           <Route index element={<Navigate to="/pos" replace />} />
           <Route path="pos" element={

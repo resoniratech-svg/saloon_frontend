@@ -22,6 +22,10 @@ const LoginPage = () => {
   // Automatically clear old mock login data on mount
   useEffect(() => {
     purgeLegacyMockAuthData();
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('expired') === 'true') {
+      setErrorMessage('Your session has expired. Please log in to continue.');
+    }
   }, []);
 
   // Password Recovery Modal States

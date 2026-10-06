@@ -100,57 +100,13 @@ export const resolveCurrentTenantId = () => {
 // Immediately execute scrubber upon module load
 purgeLegacyMockAuthData();
 
-export const ensureSuperAdminToken = async () => {
-  let token = getToken();
-  if (token) return token;
-  try {
-    const res = await fetch(`${API_BASE_URL}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'saloonqubexe@gmail.com',
-        password: 'superadmin2026',
-      }),
-    });
-    const json = await res.json();
-    if (json?.data?.token) {
-      setToken(json.data.token);
-      return json.data.token;
-    }
-  } catch (e) {
-    console.warn('Auto SuperAdmin authentication note:', e);
-  }
-  return null;
-};
-
 export const apiFetch = async (endpoint, options = {}, isRetry = false) => {
   const url = endpoint.startsWith('http')
     ? endpoint
     : `${API_BASE_URL}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
 
-  let token = getToken();
+  const token = getToken();
   const activeTenantId = resolveCurrentTenantId();
-
-  if (
-    !token &&
-    (endpoint.includes('/platform') ||
-      endpoint.includes('/cashiers') ||
-      endpoint.includes('/services') ||
-      endpoint.includes('/service-categories') ||
-      endpoint.includes('/products') ||
-      endpoint.includes('/product-categories') ||
-      endpoint.includes('/packages') ||
-      endpoint.includes('/disposables') ||
-      endpoint.includes('/guests') ||
-      endpoint.includes('/crm') ||
-      endpoint.includes('/pos') ||
-      endpoint.includes('/appointments') ||
-      endpoint.includes('/cash-management') ||
-      endpoint.includes('/expenses') ||
-      endpoint.includes('/staff'))
-  ) {
-    token = await ensureSuperAdminToken();
-  }
 
   const headers = {
     'Content-Type': 'application/json',
@@ -176,27 +132,14 @@ export const apiFetch = async (endpoint, options = {}, isRetry = false) => {
 
     if (
       res.status === 401 &&
-      (endpoint.includes('/platform') ||
-        endpoint.includes('/cashiers') ||
-        endpoint.includes('/services') ||
-        endpoint.includes('/service-categories') ||
-        endpoint.includes('/products') ||
-        endpoint.includes('/product-categories') ||
-        endpoint.includes('/packages') ||
-        endpoint.includes('/disposables') ||
-        endpoint.includes('/guests') ||
-        endpoint.includes('/crm') ||
-        endpoint.includes('/pos') ||
-        endpoint.includes('/appointments') ||
-        endpoint.includes('/cash-management') ||
-        endpoint.includes('/expenses') ||
-        endpoint.includes('/staff')) &&
-      !isRetry
+      !endpoint.includes('/auth/login') &&
+      !endpoint.includes('/auth/forgot-password') &&
+      !endpoint.includes('/auth/reset-password')
     ) {
       clearToken();
-      const freshToken = await ensureSuperAdminToken();
-      if (freshToken) {
-        return apiFetch(endpoint, options, true);
+      if (typeof window !== 'undefined' && !window.location.pathname.includes('/login')) {
+        localStorage.removeItem('respark_saas_user');
+        window.location.href = '/login?expired=true';
       }
     }
 
